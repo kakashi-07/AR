@@ -10,6 +10,36 @@ import * as THREE from 'three'
 import { useScene } from '../../contexts/SceneContext'
 import { buildFurniture, applyColor, setHighlight } from '../../utils/furnitureBuilder'
 
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => resolve(img)
+    img.onerror = reject
+    img.src = src
+  })
+}
+
+function drawCoverImage(ctx, img, width, height) {
+  const imageAspect = img.width / img.height
+  const canvasAspect = width / height
+
+  let sx = 0
+  let sy = 0
+  let sw = img.width
+  let sh = img.height
+
+  if (imageAspect > canvasAspect) {
+    sw = img.height * canvasAspect
+    sx = (img.width - sw) / 2
+  } else {
+    sh = img.width / canvasAspect
+    sy = (img.height - sh) / 2
+  }
+
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height)
+}
+
 export default function DesktopARViewer() {
   const containerRef = useRef(null)
   const canvasRef    = useRef(null)
@@ -42,6 +72,7 @@ export default function DesktopARViewer() {
       canvas: canvasRef.current,
       alpha: true,
       antialias: true,
+      preserveDrawingBuffer: true,
     })
     renderer.setSize(w, h)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -346,8 +377,54 @@ export default function DesktopARViewer() {
         mesh.scale.set(s, s, s)
       }
     }
-    return () => { delete window.__arRotate; delete window.__arScale }
-  }, [])
+    window.__saveLayoutPicture = async () => {
+      const renderer = rendererRef.current
+      const scene = sceneRef.current
+      const camera = cameraRef.current
+      const sourceCanvas = canvasRef.current
+
+      if (!renderer || !scene || !camera || !sourceCanvas) {
+        throw new Error('Viewer is not ready yet.')
+      }
+
+      renderer.render(scene, camera)
+
+      const exportCanvas = document.createElement('canvas')
+      exportCanvas.width = sourceCanvas.width
+      exportCanvas.height = sourceCanvas.height
+      const ctx = exportCanvas.getContext('2d')
+
+      if (!ctx) {
+        throw new Error('Could not prepare image export.')
+      }
+
+      if (roomImage) {
+        const bg = await loadImage(roomImage)
+        drawCoverImage(ctx, bg, exportCanvas.width, exportCanvas.height)
+      } else {
+        const gradient = ctx.createLinearGradient(0, 0, 0, exportCanvas.height)
+        gradient.addColorStop(0, '#1a1a28')
+        gradient.addColorStop(0.6, '#22222e')
+        gradient.addColorStop(1, '#2a2a3a')
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height)
+      }
+
+      ctx.drawImage(sourceCanvas, 0, 0, exportCanvas.width, exportCanvas.height)
+
+      const downloadUrl = exportCanvas.toDataURL('image/png')
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = `ar-layout-${Date.now()}.png`
+      link.click()
+    }
+
+    return () => {
+      delete window.__arRotate
+      delete window.__arScale
+      delete window.__saveLayoutPicture
+    }
+  }, [roomImage])
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden rounded-2xl">

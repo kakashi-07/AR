@@ -1,4 +1,5 @@
-import { Trash2, RotateCcw, RotateCw, Plus, Minus, RefreshCcw, Layers } from 'lucide-react'
+import { useState } from 'react'
+import { Trash2, RotateCcw, RotateCw, Plus, Minus, RefreshCcw, Layers, Download } from 'lucide-react'
 import { useScene } from '../../contexts/SceneContext'
 import { FURNITURE_ITEMS } from '../../data/furnitureData'
 
@@ -17,13 +18,25 @@ function ControlButton({ icon: Icon, label, onClick, variant = 'default', small 
 }
 
 export default function ScenePanel() {
-  const { objects, selectedId, selectedObject, selectObject, removeObject, resetScene } = useScene()
+  const [isSavingPicture, setIsSavingPicture] = useState(false)
+  const { objects, selectedId, selectedObject, selectObject, removeObject, resetScene, isARMode } = useScene()
 
   const handleRotate = (deg) => {
     if (typeof window.__arRotate === 'function') window.__arRotate(deg)
   }
   const handleScale = (factor) => {
     if (typeof window.__arScale === 'function') window.__arScale(factor)
+  }
+  const handleSavePicture = async () => {
+    if (typeof window.__saveLayoutPicture !== 'function') return
+    setIsSavingPicture(true)
+    try {
+      await window.__saveLayoutPicture()
+    } catch (error) {
+      window.alert(error?.message || 'Could not save the layout picture.')
+    } finally {
+      setIsSavingPicture(false)
+    }
   }
 
   return (
@@ -111,9 +124,19 @@ export default function ScenePanel() {
         </div>
       )}
 
-      {/* Reset scene */}
+      {/* Scene actions */}
       {objects.length > 0 && (
         <div className="px-3 pb-3 border-t border-border pt-2">
+          {!isARMode && (
+            <button
+              onClick={handleSavePicture}
+              disabled={isSavingPicture}
+              className="w-full mb-2 flex items-center justify-center gap-2 text-text-primary text-xs py-2 rounded-xl bg-accent/10 hover:bg-accent/20 border border-accent/20 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <Download size={12} />
+              {isSavingPicture ? 'Saving picture…' : 'Save Layout Picture'}
+            </button>
+          )}
           <button
             onClick={() => {
               if (window.confirm('Clear all furniture from the scene?')) resetScene()
