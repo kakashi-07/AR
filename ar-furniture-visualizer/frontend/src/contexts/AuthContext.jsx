@@ -1,19 +1,5 @@
-/**
- * AuthContext.jsx  —  works with the Flask + SQLite backend
- * API base: /api  (proxied to http://localhost:8000 via Vite)
- */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import axios from 'axios'
-
-// ── Axios instance ──────────────────────────────────────────
-const api = axios.create({ baseURL: '/api' })
-
-// Attach JWT automatically to every request
-api.interceptors.request.use(cfg => {
-  const token = localStorage.getItem('ar_token')
-  if (token) cfg.headers.Authorization = `Bearer ${token}`
-  return cfg
-})
+import { api } from '../utils/api'
 
 // ── Context ────────────────────────────────────────────────
 const AuthContext = createContext(null)
