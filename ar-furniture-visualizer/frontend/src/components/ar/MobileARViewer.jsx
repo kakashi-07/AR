@@ -30,6 +30,7 @@ export default function MobileARViewer() {
   const [arSupported, setArSupported] = useState(null)
   const [mode, setMode] = useState('idle') // idle | starting-live | live | starting-webxr | webxr | error
   const [errorMsg, setErrorMsg] = useState('')
+  const [webxrFeatureLevel, setWebxrFeatureLevel] = useState('none') // none | hit-test | dom-overlay | anchors
 
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
@@ -43,8 +44,11 @@ export default function MobileARViewer() {
   const cameraRef = useRef(null)
   const sessionRef = useRef(null)
   const hitSrcRef = useRef(null)
+  const refSpaceRef = useRef(null)
+  const latestHitResultRef = useRef(null)
   const reticleRef = useRef(null)
   const meshMapRef = useRef({})
+  const anchorMapRef = useRef({})
   const mediaStreamRef = useRef(null)
   const rafRef = useRef(null)
   const resizeHandlerRef = useRef(null)
@@ -113,6 +117,12 @@ export default function MobileARViewer() {
     cameraRef.current = null
     reticleRef.current = null
     hitSrcRef.current = null
+    refSpaceRef.current = null
+    latestHitResultRef.current = null
+    Object.values(anchorMapRef.current).forEach((anchor) => {
+      anchor?.delete?.()
+    })
+    anchorMapRef.current = {}
     meshMapRef.current = {}
   }, [])
 
@@ -222,6 +232,8 @@ export default function MobileARViewer() {
     const currentIds = new Set(objects.map((obj) => obj.id))
     Object.keys(meshMap).forEach((id) => {
       if (!currentIds.has(id)) {
+        anchorMapRef.current[id]?.delete?.()
+        delete anchorMapRef.current[id]
         scene?.remove(meshMap[id])
         delete meshMap[id]
       }
@@ -552,22 +564,62 @@ export default function MobileARViewer() {
       scene.add(reticle)
       reticleRef.current = reticle
 
-      const session = await navigator.xr.requestSession('immersive-ar', {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['dom-overlay', 'light-estimation'],
-        domOverlay: overlayRef.current ? { root: overlayRef.current } : undefined,
-      })
+      const sessionConfigs = [
+        {
+          label: 'anchors',
+          options: {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['light-estimation', 'anchors', 'dom-overlay'],
+            domOverlay: overlayRef.current ? { root: overlayRef.current } : undefined,
+          },
+        },
+        {
+          label: 'dom-overlay',
+          options: {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['light-estimation', 'dom-overlay'],
+            domOverlay: overlayRef.current ? { root: overlayRef.current } : undefined,
+          },
+        },
+        {
+          label: 'hit-test',
+          options: {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['light-estimation'],
+          },
+        },
+      ]
+
+      let session = null
+      let activeFeatureLevel = 'none'
+      let lastError = null
+
+      for (const config of sessionConfigs) {
+        try {
+          session = await navigator.xr.requestSession('immersive-ar', config.options)
+          activeFeatureLevel = config.label
+          break
+        } catch (error) {
+          lastError = error
+        }
+      }
+
+      if (!session) {
+        throw lastError || new Error('This phone/browser could not start a supported AR session.')
+      }
 
       sessionRef.current = session
+      setWebxrFeatureLevel(activeFeatureLevel)
       renderer.xr.setReferenceSpaceType('local')
       await renderer.xr.setSession(session)
 
       const refSpace = await session.requestReferenceSpace('local')
+      refSpaceRef.current = refSpace
       const viewerSpace = await session.requestReferenceSpace('viewer')
       const hitSource = await session.requestHitTestSource({ space: viewerSpace })
       hitSrcRef.current = hitSource
 
-      session.addEventListener('select', () => {
+      session.addEventListener('select', async () => {
         const selected = getSelectedMesh()
         const mesh = selected?.mesh
         const reticleMesh = reticleRef.current
@@ -581,11 +633,22 @@ export default function MobileARViewer() {
         mesh.rotation.z = 0
         selectObject(selected.id)
         setHighlight(mesh, true)
+
+        const hitResult = latestHitResultRef.current
+        if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
+          try {
+            anchorMapRef.current[selected.id]?.delete?.()
+            anchorMapRef.current[selected.id] = await hitResult.createAnchor()
+          } catch {
+            // Anchors are optional; keep the local-space placement as fallback.
+          }
+        }
       })
 
       session.addEventListener('end', () => {
         sessionRef.current = null
         cleanupRenderer()
+        setWebxrFeatureLevel('none')
         setMode('idle')
       })
 
@@ -594,13 +657,38 @@ export default function MobileARViewer() {
 
         const results = frame.getHitTestResults(hitSource)
         if (results.length > 0) {
+          latestHitResultRef.current = results[0]
           const pose = results[0].getPose(refSpace)
           if (pose && reticleRef.current) {
             reticleRef.current.visible = true
             reticleRef.current.matrix.fromArray(pose.transform.matrix)
           }
         } else if (reticleRef.current) {
+          latestHitResultRef.current = null
           reticleRef.current.visible = false
+        }
+
+        if (activeFeatureLevel === 'anchors') {
+          Object.entries(anchorMapRef.current).forEach(([id, anchor]) => {
+            const mesh = meshMapRef.current[id]
+            if (!mesh || !anchor) return
+
+            const anchorPose = frame.getPose(anchor.anchorSpace, refSpace)
+            if (!anchorPose) return
+
+            mesh.visible = true
+            mesh.position.set(
+              anchorPose.transform.position.x,
+              anchorPose.transform.position.y,
+              anchorPose.transform.position.z
+            )
+            mesh.quaternion.set(
+              anchorPose.transform.orientation.x,
+              anchorPose.transform.orientation.y,
+              anchorPose.transform.orientation.z,
+              anchorPose.transform.orientation.w
+            )
+          })
         }
 
         renderer.render(scene, renderer.xr.getCamera(camera))
@@ -609,15 +697,17 @@ export default function MobileARViewer() {
       setMode('webxr')
     } catch (error) {
       cleanupRenderer()
+      setWebxrFeatureLevel('none')
       setMode('error')
       setErrorMsg(error?.message || 'Could not start surface AR.')
     }
-  }, [arSupported, cleanupRenderer, getSelectedMesh, selectObject, setupRendererScene])
+  }, [arSupported, cleanupRenderer, getSelectedMesh, selectObject, setupRendererScene, syncSceneMeshes])
 
   const rotateSelected = useCallback((deg) => {
     const selected = getSelectedMesh()
     if (!selected?.mesh) return
     selected.mesh.rotation.y += (deg * Math.PI) / 180
+    selectObject(selected.id)
   }, [getSelectedMesh])
 
   const scaleSelected = useCallback((factor) => {
@@ -626,7 +716,8 @@ export default function MobileARViewer() {
 
     const nextScale = Math.max(0.15, Math.min(4, selected.mesh.scale.x * factor))
     selected.mesh.scale.setScalar(nextScale)
-  }, [getSelectedMesh])
+    selectObject(selected.id)
+  }, [getSelectedMesh, selectObject])
 
   const deleteSelected = useCallback(() => {
     const id = selectedIdRef.current
@@ -645,6 +736,20 @@ export default function MobileARViewer() {
     }
     reader.readAsDataURL(file)
   }, [setARMode, setRoomImage])
+
+  useEffect(() => {
+    window.__arRotate = (deg) => {
+      rotateSelected(deg)
+    }
+    window.__arScale = (factor) => {
+      scaleSelected(factor)
+    }
+
+    return () => {
+      delete window.__arRotate
+      delete window.__arScale
+    }
+  }, [rotateSelected, scaleSelected])
 
   const isCameraMode = mode === 'live' || mode === 'webxr'
 

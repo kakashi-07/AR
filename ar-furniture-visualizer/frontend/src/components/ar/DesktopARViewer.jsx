@@ -59,6 +59,26 @@ export default function DesktopARViewer() {
     selectObject, removeObject, updateTransform,
   } = useScene()
 
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
+
+  const persistTransform = useCallback((id) => {
+    if (!id) return
+    const mesh = meshMapRef.current[id]
+    if (!mesh) return
+
+    updateTransform(id, {
+      scale: mesh.scale.x,
+      rotationY: mesh.rotation.y,
+      position: {
+        x: mesh.position.x,
+        y: mesh.position.y,
+        z: mesh.position.z,
+      },
+    })
+  }, [updateTransform])
+
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
     const container = containerRef.current
@@ -272,9 +292,12 @@ export default function DesktopARViewer() {
   }, [raycastGround])
 
   const handleMouseUp = useCallback(() => {
+    if (selectedIdRef.current) {
+      persistTransform(selectedIdRef.current)
+    }
     isDraggingRef.current = false
     canvasRef.current?.classList.remove('dragging')
-  }, [])
+  }, [persistTransform])
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
@@ -286,7 +309,8 @@ export default function DesktopARViewer() {
     // Clamp scale
     const s = Math.max(0.1, Math.min(5, mesh.scale.x))
     mesh.scale.set(s, s, s)
-  }, [])
+    persistTransform(selectedIdRef.current)
+  }, [persistTransform])
 
   // ── Keyboard controls ────────────────────────────────────────
   useEffect(() => {
@@ -298,14 +322,17 @@ export default function DesktopARViewer() {
 
       if (e.key === 'r' || e.key === 'R') {
         mesh.rotation.y += rotationStep
+        persistTransform(selectedIdRef.current)
       }
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
         mesh.rotation.y -= rotationStep
+        persistTransform(selectedIdRef.current)
       }
       if (e.key === 'ArrowRight') {
         e.preventDefault()
         mesh.rotation.y += rotationStep
+        persistTransform(selectedIdRef.current)
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
@@ -367,7 +394,10 @@ export default function DesktopARViewer() {
     window.__arRotate = (deg) => {
       if (!selectedIdRef.current) return
       const mesh = meshMapRef.current[selectedIdRef.current]
-      if (mesh) mesh.rotation.y += (deg * Math.PI) / 180
+      if (mesh) {
+        mesh.rotation.y += (deg * Math.PI) / 180
+        persistTransform(selectedIdRef.current)
+      }
     }
     window.__arScale = (factor) => {
       if (!selectedIdRef.current) return
@@ -375,6 +405,7 @@ export default function DesktopARViewer() {
       if (mesh) {
         const s = Math.max(0.1, Math.min(5, mesh.scale.x * factor))
         mesh.scale.set(s, s, s)
+        persistTransform(selectedIdRef.current)
       }
     }
     window.__saveLayoutPicture = async () => {
@@ -424,7 +455,7 @@ export default function DesktopARViewer() {
       delete window.__arScale
       delete window.__saveLayoutPicture
     }
-  }, [roomImage])
+  }, [persistTransform, roomImage])
 
   return (
     <div ref={containerRef} className="relative w-full h-full overflow-hidden rounded-2xl">
