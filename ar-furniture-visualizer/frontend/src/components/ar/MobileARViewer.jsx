@@ -51,6 +51,7 @@ export default function MobileARViewer() {
   const raycasterRef = useRef(new THREE.Raycaster())
   const pointerRef = useRef(new THREE.Vector2())
   const selectedIdRef = useRef(null)
+  const knownObjectIdsRef = useRef(new Set())
 
   const {
     objects,
@@ -64,6 +65,10 @@ export default function MobileARViewer() {
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
+
+  useEffect(() => {
+    knownObjectIdsRef.current = new Set(objects.map((obj) => obj.id))
+  }, [])
 
   useEffect(() => {
     if (!navigator.xr) {
@@ -281,20 +286,36 @@ export default function MobileARViewer() {
     const point = projectToPlacementPlane(clientX, clientY)
     if (!point) return
 
+    const box = new THREE.Box3().setFromObject(mesh)
+    const bottomOffset = Number.isFinite(box.min.y) ? -box.min.y : 0
+
     mesh.visible = true
-    mesh.position.copy(point)
+    mesh.position.set(point.x, point.y + bottomOffset, point.z)
     mesh.rotation.x = 0
     mesh.rotation.z = 0
-    mesh.scale.setScalar(Math.max(mesh.scale.x || 1, 1))
     selectObject(selected.id)
     setHighlight(mesh, true)
   }, [getSelectedMesh, projectToPlacementPlane, selectObject])
 
+  const placeMeshInFrontOfCamera = useCallback((mesh, slotIndex = 0) => {
+    if (!mesh) return
+
+    const offsets = [-0.6, 0, 0.6, -1.1, 1.1]
+    const box = new THREE.Box3().setFromObject(mesh)
+    const bottomOffset = Number.isFinite(box.min.y) ? -box.min.y : 0
+
+    mesh.visible = true
+    mesh.position.set(offsets[slotIndex] ?? 0, -0.45 + bottomOffset, -2.2)
+    if (mesh.scale.x === 1 && mesh.scale.y === 1 && mesh.scale.z === 1) {
+      mesh.scale.setScalar(0.9)
+    }
+  }, [])
+
   const handleLiveCanvasTap = useCallback((event) => {
     if (mode !== 'live') return
 
-    const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX
-    const clientY = 'touches' in event ? event.touches[0]?.clientY : event.clientY
+    const clientX = event.clientX
+    const clientY = event.clientY
     if (typeof clientX !== 'number' || typeof clientY !== 'number') return
 
     const hit = getMeshAtPoint(clientX, clientY)
@@ -306,6 +327,22 @@ export default function MobileARViewer() {
 
     placeSelectedAt(clientX, clientY)
   }, [getMeshAtPoint, mode, placeSelectedAt, selectObject])
+
+  useEffect(() => {
+    if (mode !== 'live') return
+
+    const knownIds = knownObjectIdsRef.current
+    const newObjects = objects.filter((obj) => !knownIds.has(obj.id))
+
+    newObjects.forEach((obj, index) => {
+      const mesh = meshMapRef.current[obj.id]
+      if (!mesh) return
+      placeMeshInFrontOfCamera(mesh, index)
+      selectObject(obj.id)
+    })
+
+    knownObjectIdsRef.current = new Set(objects.map((obj) => obj.id))
+  }, [mode, objects, placeMeshInFrontOfCamera, selectObject])
 
   const startLiveCamera = useCallback(async () => {
     setErrorMsg('')
@@ -333,6 +370,11 @@ export default function MobileARViewer() {
       const { renderer, scene, camera } = setupRendererScene()
       syncSceneMeshes(scene)
 
+      const initialSelected = getSelectedMesh()
+      if (initialSelected?.mesh) {
+        placeMeshInFrontOfCamera(initialSelected.mesh, 1)
+      }
+
       const animate = () => {
         rafRef.current = requestAnimationFrame(animate)
         renderer.render(scene, camera)
@@ -346,7 +388,7 @@ export default function MobileARViewer() {
       setMode('error')
       setErrorMsg(error?.message || 'Could not start the live camera.')
     }
-  }, [cleanupRenderer, setupRendererScene, stopLiveStream])
+  }, [cleanupRenderer, getSelectedMesh, placeMeshInFrontOfCamera, setupRendererScene, stopLiveStream, syncSceneMeshes])
 
   const startWebXR = useCallback(async () => {
     if (!arSupported) {
@@ -475,8 +517,7 @@ export default function MobileARViewer() {
       <canvas
         ref={canvasRef}
         className={`absolute inset-0 h-full w-full ${isCameraMode ? 'block' : 'hidden'}`}
-        onClick={handleLiveCanvasTap}
-        onTouchStart={handleLiveCanvasTap}
+        onPointerDown={handleLiveCanvasTap}
         style={{ touchAction: 'none' }}
       />
 
@@ -656,6 +697,14 @@ export default function MobileARViewer() {
               >
                 <Trash2 size={18} />
               </button>
+            </div>
+          </div>
+        )}
+
+        {mode === 'live' && (
+          <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center pointer-events-none">
+            <div className="rounded-full bg-black/40 px-4 py-1 text-xs text-white/80 backdrop-blur-sm">
+              Tap anywhere in the camera view to place the selected item
             </div>
           </div>
         )}

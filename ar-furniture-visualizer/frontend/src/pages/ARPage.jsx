@@ -45,14 +45,14 @@ export default function ARPage() {
       </div>
 
       {/* ── Mobile layout ──────────────────────── */}
-      <div className="lg:hidden flex-1 min-h-0 flex flex-col overflow-hidden">
-        <main className="flex-1 min-h-[18rem] p-2 sm:p-3 overflow-hidden">
+      <div className="lg:hidden flex-1 min-h-0 flex flex-col overflow-y-auto">
+        <main className="flex-shrink-0 h-[40dvh] min-h-[16rem] max-h-[24rem] p-2 sm:p-3 overflow-hidden">
           <div className="w-full h-full rounded-2xl overflow-hidden border border-border bg-bg-secondary">
             {isARMode ? <MobileARViewer /> : <DesktopARViewer />}
           </div>
         </main>
 
-        <section className="flex-shrink-0 border-t border-border bg-bg-secondary min-h-0">
+        <section className="flex flex-col flex-1 min-h-[20rem] border-t border-border bg-bg-secondary">
           <div className="px-3 pt-3">
             <div className="grid grid-cols-2 gap-2 rounded-2xl bg-bg-elevated p-1 border border-border">
               <button
@@ -78,7 +78,7 @@ export default function ARPage() {
             </div>
           </div>
 
-          <div className="max-h-[38dvh] min-h-[15rem] overflow-hidden">
+          <div className="flex-1 min-h-[18rem] overflow-hidden pb-3">
             {mobileTab === 'catalog' ? <FurnitureCatalog /> : <ScenePanel />}
           </div>
         </section>

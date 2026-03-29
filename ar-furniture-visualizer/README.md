@@ -44,6 +44,7 @@ If you deploy **frontend and backend as separate Render services**:
 3. Deploy the frontend service from `frontend/`
 4. Set frontend env var:
    - `VITE_API_BASE_URL=https://your-backend-service.onrender.com/api`
+5. Keep the SPA rewrite file in `frontend/public/_redirects` so refreshing `/app` routes works on Render
 
 If you deploy **a single backend service**:
 
