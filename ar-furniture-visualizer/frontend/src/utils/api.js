@@ -1,5 +1,3 @@
-import axios from 'axios'
-
 const envBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim()
 const defaultBaseUrl = import.meta.env.DEV
   ? '/api'
@@ -14,12 +12,51 @@ if (!import.meta.env.DEV && !envBaseUrl) {
   )
 }
 
-export const api = axios.create({ baseURL: apiBaseUrl })
-
-api.interceptors.request.use(cfg => {
+function getAuthHeaders(extraHeaders = {}) {
   const token = localStorage.getItem('ar_token')
-  if (token) cfg.headers.Authorization = `Bearer ${token}`
-  return cfg
-})
+  return token
+    ? { ...extraHeaders, Authorization: `Bearer ${token}` }
+    : extraHeaders
+}
+
+async function request(path, options = {}) {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    ...options,
+    headers: getAuthHeaders(options.headers),
+  })
+
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    throw {
+      response: {
+        status: response.status,
+        data,
+      },
+    }
+  }
+
+  return { data }
+}
+
+export const api = {
+  get(path) {
+    return request(path)
+  },
+  post(path, body) {
+    return request(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+  },
+  delete(path) {
+    return request(path, {
+      method: 'DELETE',
+    })
+  },
+}
 
 export const API_BASE_URL = apiBaseUrl
