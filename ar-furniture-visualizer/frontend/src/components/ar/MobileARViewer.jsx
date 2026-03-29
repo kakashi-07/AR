@@ -67,6 +67,8 @@ export default function MobileARViewer() {
     active: false,
     distance: 0,
     startScale: 1,
+    lastCenter: null,
+    lastAngle: 0,
     touches: new Map(),
     objectId: null,
   })
@@ -448,12 +450,19 @@ export default function MobileARViewer() {
     if (event.touches.length === 2 && selectedIdRef.current) {
       const [a, b] = Array.from(event.touches)
       const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const center = {
+        x: (a.clientX + b.clientX) / 2,
+        y: (a.clientY + b.clientY) / 2,
+      }
+      const angle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX)
       const mesh = meshMapRef.current[selectedIdRef.current]
       if (!mesh) return
 
       pinchState.active = true
       pinchState.distance = distance
       pinchState.startScale = mesh.scale.x
+      pinchState.lastCenter = center
+      pinchState.lastAngle = angle
       pinchState.objectId = selectedIdRef.current
       dragStateRef.current.active = false
     }
@@ -476,6 +485,11 @@ export default function MobileARViewer() {
       event.preventDefault()
       const [a, b] = Array.from(event.touches)
       const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const center = {
+        x: (a.clientX + b.clientX) / 2,
+        y: (a.clientY + b.clientY) / 2,
+      }
+      const angle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX)
       const mesh = meshMapRef.current[pinchState.objectId]
       if (!mesh || !pinchState.distance) return
 
@@ -484,6 +498,23 @@ export default function MobileARViewer() {
         Math.min(4, pinchState.startScale * (distance / pinchState.distance))
       )
       mesh.scale.setScalar(nextScale)
+
+      if (pinchState.lastCenter) {
+        const deltaX = center.x - pinchState.lastCenter.x
+        const deltaY = center.y - pinchState.lastCenter.y
+
+        mesh.rotation.y += deltaX * 0.01
+        mesh.rotation.x = Math.max(
+          -Math.PI / 2,
+          Math.min(Math.PI / 2, mesh.rotation.x + deltaY * 0.01)
+        )
+      }
+
+      const angleDelta = angle - pinchState.lastAngle
+      mesh.rotation.z += angleDelta
+
+      pinchState.lastCenter = center
+      pinchState.lastAngle = angle
     }
   }, [mode])
 
@@ -496,6 +527,8 @@ export default function MobileARViewer() {
     if (event.touches.length < 2) {
       pinchState.active = false
       pinchState.distance = 0
+      pinchState.lastCenter = null
+      pinchState.lastAngle = 0
       pinchState.objectId = null
     }
   }, [])
