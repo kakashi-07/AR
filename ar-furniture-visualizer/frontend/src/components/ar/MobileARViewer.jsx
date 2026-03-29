@@ -1,10 +1,8 @@
 /**
  * MobileARViewer.jsx
- * WebXR Immersive AR with hit-testing for mobile.
- * - Real-world surface detection via WebXR hit-test API
- * - Multi-object placement with tap
- * - Overlay UI for scale/rotate/delete controls
- * - Falls back to model-viewer if WebXR unavailable
+ * Mobile-first camera experience with two modes:
+ * - Live camera preview with touch placement
+ * - WebXR surface AR when supported by the device/browser
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
@@ -12,411 +10,656 @@ import { useScene } from '../../contexts/SceneContext'
 import { buildFurniture, applyColor, setHighlight } from '../../utils/furnitureBuilder'
 import { FURNITURE_ITEMS } from '../../data/furnitureData'
 import {
-  RotateCcw, RotateCw, Plus, Minus, Trash2, X, Maximize
+  RotateCcw, RotateCw, Plus, Minus, Trash2, X, Camera, Upload, ScanLine, ImagePlus,
 } from 'lucide-react'
 
-// ── Reticle geometry (ring indicator on floor) ──────────────
 function createReticle() {
   const ring = new THREE.RingGeometry(0.12, 0.15, 32)
   ring.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2))
-  const mat  = new THREE.MeshBasicMaterial({ color: 0xD4A574, side: THREE.DoubleSide })
-  const mesh = new THREE.Mesh(ring, mat)
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xD4A574,
+    side: THREE.DoubleSide,
+  })
+  const mesh = new THREE.Mesh(ring, material)
   mesh.visible = false
   mesh.matrixAutoUpdate = false
   return mesh
 }
 
 export default function MobileARViewer() {
-  const [arSupported, setArSupported] = useState(null) // null=checking, true/false
-  const [arActive,    setArActive]    = useState(false)
-  const [status,      setStatus]      = useState('idle') // idle | starting | active | error
-  const [errorMsg,    setErrorMsg]    = useState('')
+  const [arSupported, setArSupported] = useState(null)
+  const [mode, setMode] = useState('idle') // idle | starting-live | live | starting-webxr | webxr | error
+  const [errorMsg, setErrorMsg] = useState('')
 
-  const containerRef  = useRef(null)
-  const canvasRef     = useRef(null)
-  const sessionRef    = useRef(null)
-  const rendererRef   = useRef(null)
-  const sceneRef      = useRef(null)
-  const cameraRef     = useRef(null)
-  const reticleRef    = useRef(null)
-  const hitSrcRef     = useRef(null)
-  const meshMapRef    = useRef({})
+  const containerRef = useRef(null)
+  const canvasRef = useRef(null)
+  const videoRef = useRef(null)
+  const overlayRef = useRef(null)
+  const uploadInputRef = useRef(null)
+  const captureInputRef = useRef(null)
+
+  const rendererRef = useRef(null)
+  const sceneRef = useRef(null)
+  const cameraRef = useRef(null)
+  const sessionRef = useRef(null)
+  const hitSrcRef = useRef(null)
+  const reticleRef = useRef(null)
+  const meshMapRef = useRef({})
+  const mediaStreamRef = useRef(null)
+  const rafRef = useRef(null)
+  const resizeHandlerRef = useRef(null)
+  const raycasterRef = useRef(new THREE.Raycaster())
+  const pointerRef = useRef(new THREE.Vector2())
   const selectedIdRef = useRef(null)
-  const placingFurIdRef = useRef(null)
-  const rafRef        = useRef(null)
-  const overlayRef    = useRef(null)
 
-  const { objects, selectedId, selectObject, removeObject, addObject } = useScene()
+  const {
+    objects,
+    selectedId,
+    selectObject,
+    removeObject,
+    setRoomImage,
+    setARMode,
+  } = useScene()
 
-  // ── Check WebXR support ────────────────────────────────────
   useEffect(() => {
-    if (navigator.xr) {
-      navigator.xr.isSessionSupported('immersive-ar')
-        .then(supported => setArSupported(supported))
-        .catch(() => setArSupported(false))
-    } else {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
+
+  useEffect(() => {
+    if (!navigator.xr) {
       setArSupported(false)
+      return
+    }
+
+    navigator.xr.isSessionSupported('immersive-ar')
+      .then((supported) => setArSupported(supported))
+      .catch(() => setArSupported(false))
+  }, [])
+
+  const cleanupRenderer = useCallback(() => {
+    if (rendererRef.current) {
+      rendererRef.current.setAnimationLoop(null)
+      rendererRef.current.dispose()
+      rendererRef.current = null
+    }
+
+    if (resizeHandlerRef.current) {
+      window.removeEventListener('resize', resizeHandlerRef.current)
+      resizeHandlerRef.current = null
+    }
+
+    cancelAnimationFrame(rafRef.current)
+    rafRef.current = null
+    sceneRef.current = null
+    cameraRef.current = null
+    reticleRef.current = null
+    hitSrcRef.current = null
+    meshMapRef.current = {}
+  }, [])
+
+  const stopLiveStream = useCallback(() => {
+    mediaStreamRef.current?.getTracks().forEach((track) => track.stop())
+    mediaStreamRef.current = null
+
+    if (videoRef.current) {
+      videoRef.current.pause()
+      videoRef.current.srcObject = null
     }
   }, [])
 
-  // ── Keep meshMap in sync with scene objects ────────────────
-  useEffect(() => {
-    const scene = sceneRef.current
-    if (!scene) return
-    const meshMap = meshMapRef.current
+  const stopAllModes = useCallback(async () => {
+    const session = sessionRef.current
+    sessionRef.current = null
 
-    objects.forEach(obj => {
+    if (session) {
+      try {
+        await session.end()
+      } catch {
+        // Ignore end race conditions during cleanup.
+      }
+    }
+
+    stopLiveStream()
+    cleanupRenderer()
+    setMode('idle')
+  }, [cleanupRenderer, stopLiveStream])
+
+  useEffect(() => {
+    return () => {
+      stopAllModes()
+    }
+  }, [stopAllModes])
+
+  const setupRendererScene = useCallback(({ enableXR = false } = {}) => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) {
+      throw new Error('Camera surface is not ready yet.')
+    }
+
+    cleanupRenderer()
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+      preserveDrawingBuffer: true,
+    })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.shadowMap.enabled = true
+    renderer.xr.enabled = enableXR
+
+    const scene = new THREE.Scene()
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2))
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2)
+    keyLight.position.set(1.5, 3, 2)
+    keyLight.castShadow = true
+    scene.add(keyLight)
+
+    const fillLight = new THREE.DirectionalLight(0xd5e4ff, 0.4)
+    fillLight.position.set(-2, 1, 0.5)
+    scene.add(fillLight)
+
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 30)
+    camera.position.set(0, 0, 0)
+    camera.lookAt(0, 0, -1)
+
+    const resize = () => {
+      const width = container.clientWidth || window.innerWidth
+      const height = container.clientHeight || window.innerHeight
+      if (!width || !height) return
+
+      renderer.setSize(width, height, false)
+      camera.aspect = width / height
+      camera.updateProjectionMatrix()
+    }
+
+    resize()
+    window.addEventListener('resize', resize)
+    resizeHandlerRef.current = resize
+
+    sceneRef.current = scene
+    cameraRef.current = camera
+    rendererRef.current = renderer
+
+    return { renderer, scene, camera }
+  }, [cleanupRenderer])
+
+  const syncSceneMeshes = useCallback((scene) => {
+    const meshMap = meshMapRef.current
+    objects.forEach((obj) => {
       if (!meshMap[obj.id]) {
         const group = buildFurniture(obj.furnitureId, obj.colorHex)
         group.userData.sceneObjId = obj.id
         group.userData.isFurniture = true
-        group.visible = false // will become visible when placed
+        group.visible = false
         scene.add(group)
         meshMap[obj.id] = group
       }
     })
 
-    const currentIds = new Set(objects.map(o => o.id))
-    Object.keys(meshMap).forEach(id => {
+    const currentIds = new Set(objects.map((obj) => obj.id))
+    Object.keys(meshMap).forEach((id) => {
       if (!currentIds.has(id)) {
-        scene.remove(meshMap[id])
+        scene?.remove(meshMap[id])
         delete meshMap[id]
       }
     })
   }, [objects])
 
-  // ── Color sync ──────────────────────────────────────────────
   useEffect(() => {
-    objects.forEach(obj => {
+    const scene = sceneRef.current
+    if (!scene) return
+    syncSceneMeshes(scene)
+  }, [syncSceneMeshes])
+
+  useEffect(() => {
+    objects.forEach((obj) => {
       const mesh = meshMapRef.current[obj.id]
-      if (mesh) applyColor(mesh, obj.colorHex)
+      if (!mesh) return
+      applyColor(mesh, obj.colorHex)
+      setHighlight(mesh, obj.id === selectedId)
     })
-  }, [objects.map(o => `${o.id}:${o.colorHex}`).join(',')]) // eslint-disable-line
+  }, [objects, selectedId])
 
-  // ── Start WebXR AR session ─────────────────────────────────
-  const startAR = useCallback(async () => {
-    setStatus('starting')
+  const getSelectedMesh = useCallback(() => {
+    const activeId = selectedIdRef.current || objects[0]?.id || null
+    if (!activeId) return null
+    return {
+      id: activeId,
+      mesh: meshMapRef.current[activeId] || null,
+    }
+  }, [objects])
+
+  const setCanvasPointer = useCallback((clientX, clientY) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return false
+
+    pointerRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1
+    pointerRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1
+    return true
+  }, [])
+
+  const getMeshAtPoint = useCallback((clientX, clientY) => {
+    if (!setCanvasPointer(clientX, clientY) || !cameraRef.current) return null
+
+    raycasterRef.current.setFromCamera(pointerRef.current, cameraRef.current)
+    const meshes = Object.values(meshMapRef.current).filter((mesh) => mesh.visible)
+    const hits = raycasterRef.current.intersectObjects(meshes, true)
+
+    if (!hits.length) return null
+
+    let target = hits[0].object
+    while (target.parent && !target.userData.isFurniture) {
+      target = target.parent
+    }
+    return target.userData.isFurniture ? target : null
+  }, [setCanvasPointer])
+
+  const projectToPlacementPlane = useCallback((clientX, clientY, depth = 2.4) => {
+    if (!setCanvasPointer(clientX, clientY) || !cameraRef.current) return null
+
+    const camera = cameraRef.current
+    const worldPoint = new THREE.Vector3(pointerRef.current.x, pointerRef.current.y, 0.5)
+      .unproject(camera)
+    const direction = worldPoint.sub(camera.position).normalize()
+
+    if (Math.abs(direction.z) < 0.0001) return null
+
+    const targetZ = -depth
+    const distance = (targetZ - camera.position.z) / direction.z
+    return camera.position.clone().add(direction.multiplyScalar(distance))
+  }, [setCanvasPointer])
+
+  const placeSelectedAt = useCallback((clientX, clientY) => {
+    const selected = getSelectedMesh()
+    if (!selected?.mesh) return
+
+    const mesh = selected.mesh
+    const point = projectToPlacementPlane(clientX, clientY)
+    if (!point) return
+
+    mesh.visible = true
+    mesh.position.copy(point)
+    mesh.rotation.x = 0
+    mesh.rotation.z = 0
+    mesh.scale.setScalar(Math.max(mesh.scale.x || 1, 1))
+    selectObject(selected.id)
+    setHighlight(mesh, true)
+  }, [getSelectedMesh, projectToPlacementPlane, selectObject])
+
+  const handleLiveCanvasTap = useCallback((event) => {
+    if (mode !== 'live') return
+
+    const clientX = 'touches' in event ? event.touches[0]?.clientX : event.clientX
+    const clientY = 'touches' in event ? event.touches[0]?.clientY : event.clientY
+    if (typeof clientX !== 'number' || typeof clientY !== 'number') return
+
+    const hit = getMeshAtPoint(clientX, clientY)
+    if (hit) {
+      const id = hit.userData.sceneObjId
+      selectObject(id)
+      return
+    }
+
+    placeSelectedAt(clientX, clientY)
+  }, [getMeshAtPoint, mode, placeSelectedAt, selectObject])
+
+  const startLiveCamera = useCallback(async () => {
     setErrorMsg('')
+    setMode('starting-live')
+
     try {
-      // Create renderer
-      const canvas = canvasRef.current
-      const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
-      renderer.setPixelRatio(window.devicePixelRatio)
-      renderer.setSize(window.innerWidth, window.innerHeight)
-      renderer.xr.enabled = true
-      renderer.shadowMap.enabled = true
-      renderer.outputColorSpace = THREE.SRGBColorSpace
-      rendererRef.current = renderer
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      })
 
-      // Scene
-      const scene = new THREE.Scene()
-      const ambient = new THREE.AmbientLight(0xffffff, 0.8)
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.6)
-      dirLight.position.set(5, 10, 5)
-      dirLight.castShadow = true
-      scene.add(ambient, dirLight)
-      sceneRef.current = scene
+      mediaStreamRef.current = stream
 
-      // Camera (handled by XR)
-      const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 200)
-      cameraRef.current = camera
+      if (!videoRef.current) {
+        throw new Error('Video preview is not ready yet.')
+      }
 
-      // Reticle
+      videoRef.current.srcObject = stream
+      await videoRef.current.play()
+
+      const { renderer, scene, camera } = setupRendererScene()
+      syncSceneMeshes(scene)
+
+      const animate = () => {
+        rafRef.current = requestAnimationFrame(animate)
+        renderer.render(scene, camera)
+      }
+      animate()
+
+      setMode('live')
+    } catch (error) {
+      stopLiveStream()
+      cleanupRenderer()
+      setMode('error')
+      setErrorMsg(error?.message || 'Could not start the live camera.')
+    }
+  }, [cleanupRenderer, setupRendererScene, stopLiveStream])
+
+  const startWebXR = useCallback(async () => {
+    if (!arSupported) {
+      setMode('error')
+      setErrorMsg('Surface AR is not supported on this phone/browser.')
+      return
+    }
+
+    setErrorMsg('')
+    setMode('starting-webxr')
+
+    try {
+      const { renderer, scene, camera } = setupRendererScene({ enableXR: true })
+      syncSceneMeshes(scene)
+
       const reticle = createReticle()
       scene.add(reticle)
       reticleRef.current = reticle
 
-      // Request XR session
       const session = await navigator.xr.requestSession('immersive-ar', {
         requiredFeatures: ['hit-test'],
         optionalFeatures: ['dom-overlay', 'light-estimation'],
         domOverlay: overlayRef.current ? { root: overlayRef.current } : undefined,
       })
+
       sessionRef.current = session
       renderer.xr.setReferenceSpaceType('local')
       await renderer.xr.setSession(session)
 
-      // Reference spaces
-      const refSpace    = await session.requestReferenceSpace('local')
+      const refSpace = await session.requestReferenceSpace('local')
       const viewerSpace = await session.requestReferenceSpace('viewer')
-      const hitSource   = await session.requestHitTestSource({ space: viewerSpace })
+      const hitSource = await session.requestHitTestSource({ space: viewerSpace })
       hitSrcRef.current = hitSource
 
-      // Tap-to-place listener
       session.addEventListener('select', () => {
-        if (reticle.visible && placingFurIdRef.current) {
-          // Place the pending furniture at reticle
-          const meshMap = meshMapRef.current
-          // Find first invisible mesh of this furniture type to place
-          const toPlace = objects.find(o =>
-            o.furnitureId === placingFurIdRef.current &&
-            meshMap[o.id] && !meshMap[o.id].visible
-          )
-          if (toPlace) {
-            const mesh = meshMap[toPlace.id]
-            mesh.visible = true
-            mesh.position.setFromMatrixPosition(reticle.matrix)
-            mesh.quaternion.setFromRotationMatrix(reticle.matrix)
-            setHighlight(mesh, false)
-          }
-        }
+        const selected = getSelectedMesh()
+        const mesh = selected?.mesh
+        const reticleMesh = reticleRef.current
+
+        if (!mesh || !reticleMesh?.visible) return
+
+        mesh.visible = true
+        mesh.position.setFromMatrixPosition(reticleMesh.matrix)
+        mesh.quaternion.setFromRotationMatrix(reticleMesh.matrix)
+        mesh.rotation.x = 0
+        mesh.rotation.z = 0
+        selectObject(selected.id)
+        setHighlight(mesh, true)
       })
 
-      // Session ended
       session.addEventListener('end', () => {
-        setArActive(false)
-        setStatus('idle')
-        renderer.dispose()
-        cancelAnimationFrame(rafRef.current)
+        sessionRef.current = null
+        cleanupRenderer()
+        setMode('idle')
       })
 
-      // ── XR Render Loop ────────────────────────────────────
-      renderer.setAnimationLoop((timestamp, frame) => {
+      renderer.setAnimationLoop((_, frame) => {
         if (!frame) return
-        const hitResults = frame.getHitTestResults(hitSource)
-        if (hitResults.length > 0) {
-          const pose = hitResults[0].getPose(refSpace)
-          reticle.visible = true
-          reticle.matrix.fromArray(pose.transform.matrix)
-        } else {
-          reticle.visible = false
+
+        const results = frame.getHitTestResults(hitSource)
+        if (results.length > 0) {
+          const pose = results[0].getPose(refSpace)
+          if (pose && reticleRef.current) {
+            reticleRef.current.visible = true
+            reticleRef.current.matrix.fromArray(pose.transform.matrix)
+          }
+        } else if (reticleRef.current) {
+          reticleRef.current.visible = false
         }
+
         renderer.render(scene, renderer.xr.getCamera(camera))
       })
 
-      setArActive(true)
-      setStatus('active')
-
-    } catch (err) {
-      console.error('AR Error:', err)
-      setErrorMsg(err.message || 'Failed to start AR')
-      setStatus('error')
+      setMode('webxr')
+    } catch (error) {
+      cleanupRenderer()
+      setMode('error')
+      setErrorMsg(error?.message || 'Could not start surface AR.')
     }
-  }, [objects])
+  }, [arSupported, cleanupRenderer, getSelectedMesh, selectObject, setupRendererScene])
 
-  const stopAR = useCallback(() => {
-    sessionRef.current?.end()
-    rendererRef.current?.dispose()
-    setArActive(false)
-    setStatus('idle')
-  }, [])
+  const rotateSelected = useCallback((deg) => {
+    const selected = getSelectedMesh()
+    if (!selected?.mesh) return
+    selected.mesh.rotation.y += (deg * Math.PI) / 180
+  }, [getSelectedMesh])
 
-  // ── Overlay controls ────────────────────────────────────────
-  const rotateSelected = (deg) => {
-    const mesh = meshMapRef.current[selectedIdRef.current]
-    if (mesh) mesh.rotation.y += (deg * Math.PI) / 180
-  }
-  const scaleSelected = (factor) => {
-    const mesh = meshMapRef.current[selectedIdRef.current]
-    if (!mesh) return
-    const s = Math.max(0.1, Math.min(5, mesh.scale.x * factor))
-    mesh.scale.set(s, s, s)
-  }
-  const deleteSelected = () => {
-    if (selectedIdRef.current) removeObject(selectedIdRef.current)
-    selectedIdRef.current = null
-  }
+  const scaleSelected = useCallback((factor) => {
+    const selected = getSelectedMesh()
+    if (!selected?.mesh) return
 
-  // ── Model-Viewer fallback ───────────────────────────────────
-  const renderModelViewerFallback = () => {
-    const selected = objects[0]
-    if (!selected) return null
-    const furniture = FURNITURE_ITEMS.find(f => f.id === selected.furnitureId)
-    return (
-      <div className="relative w-full h-full flex items-center justify-center bg-bg-primary rounded-2xl">
-        <div className="text-center p-8">
-          <div className="text-6xl mb-4">{furniture?.emoji || '🛋️'}</div>
-          <p className="text-text-primary font-display text-xl mb-2">
-            Model Viewer Preview
-          </p>
-          <p className="text-text-secondary text-sm mb-4">
-            WebXR AR is not supported on this device.<br />
-            Using 3D preview mode instead.
-          </p>
-          <model-viewer
-            src={`/models/${selected.furnitureId}.glb`}
-            alt={furniture?.name}
-            auto-rotate
-            camera-controls
-            ar
-            ar-modes="webxr scene-viewer quick-look"
-            style={{ width: '100%', height: '300px', background: 'transparent' }}
-          />
-        </div>
-      </div>
-    )
-  }
+    const nextScale = Math.max(0.15, Math.min(4, selected.mesh.scale.x * factor))
+    selected.mesh.scale.setScalar(nextScale)
+  }, [getSelectedMesh])
 
-  if (arSupported === null) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-text-secondary animate-pulse">Checking AR support…</div>
-      </div>
-    )
-  }
+  const deleteSelected = useCallback(() => {
+    const id = selectedIdRef.current
+    if (!id) return
+    removeObject(id)
+    selectObject(null)
+  }, [removeObject, selectObject])
 
-  if (!arSupported) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-4 p-8">
-        <div className="text-5xl">📱</div>
-        <h3 className="font-display text-xl text-text-primary text-center">
-          WebXR Not Supported
-        </h3>
-        <p className="text-text-secondary text-sm text-center max-w-xs">
-          Your device or browser does not support WebXR AR.
-          Try Chrome on Android with ARCore, or Safari 16+ on iOS.
-        </p>
-        {objects.length > 0 && renderModelViewerFallback()}
-      </div>
-    )
-  }
+  const handlePhotoFile = useCallback((file) => {
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      setRoomImage(event.target?.result || null)
+      setARMode(false)
+    }
+    reader.readAsDataURL(file)
+  }, [setARMode, setRoomImage])
+
+  const isCameraMode = mode === 'live' || mode === 'webxr'
 
   return (
-    <div ref={containerRef} className="relative w-full h-full">
-      {/* XR Canvas */}
-      <canvas
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full"
-        style={{ display: arActive ? 'block' : 'none' }}
+    <div ref={containerRef} className="relative h-full w-full overflow-hidden bg-bg-primary">
+      <video
+        ref={videoRef}
+        className={`absolute inset-0 h-full w-full object-cover ${mode === 'live' ? 'block' : 'hidden'}`}
+        autoPlay
+        muted
+        playsInline
       />
 
-      {/* Idle State (before AR starts) */}
-      {!arActive && (
-        <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
-          <div className="text-6xl animate-float">📷</div>
-          <div className="text-center">
-            <h3 className="font-display text-2xl text-text-primary mb-2">
-              Live AR Mode
-            </h3>
-            <p className="text-text-secondary text-sm max-w-xs">
-              Point your camera at a flat surface. Select furniture, then tap to place it in your room.
-            </p>
-          </div>
+      <canvas
+        ref={canvasRef}
+        className={`absolute inset-0 h-full w-full ${isCameraMode ? 'block' : 'hidden'}`}
+        onClick={handleLiveCanvasTap}
+        onTouchStart={handleLiveCanvasTap}
+        style={{ touchAction: 'none' }}
+      />
 
-          {objects.length === 0 && (
-            <div className="glass-card px-4 py-3 text-center">
-              <p className="text-warning text-xs">
-                ⚠️ Add furniture from the sidebar first
+      <input
+        ref={uploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => handlePhotoFile(event.target.files?.[0])}
+      />
+      <input
+        ref={captureInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(event) => handlePhotoFile(event.target.files?.[0])}
+      />
+
+      {!isCameraMode && (
+        <div className="absolute inset-0 overflow-y-auto custom-scroll">
+          <div className="flex min-h-full flex-col items-center justify-center gap-5 px-4 py-6 text-center sm:px-8">
+            <div className="text-5xl animate-float">📱</div>
+
+            <div className="max-w-sm space-y-2">
+              <h3 className="font-display text-2xl text-text-primary">Mobile AR Tools</h3>
+              <p className="text-sm text-text-secondary">
+                Use live camera mode for quick placement, or launch surface AR on supported phones for
+                real-world hit testing.
               </p>
             </div>
-          )}
 
-          <button
-            onClick={startAR}
-            disabled={status === 'starting'}
-            className="btn-primary flex items-center gap-2 text-lg px-8 py-4"
-          >
-            {status === 'starting' ? (
-              <>
-                <div className="w-5 h-5 border-2 border-bg-primary/50 border-t-bg-primary rounded-full animate-spin" />
-                Starting AR…
-              </>
-            ) : (
-              <>
-                <Maximize size={20} />
-                Launch AR Experience
-              </>
+            <div className="grid w-full max-w-sm gap-3">
+              <button
+                onClick={startLiveCamera}
+                disabled={mode === 'starting-live'}
+                className="btn-primary flex items-center justify-center gap-2 px-5 py-4 text-base"
+              >
+                <Camera size={18} />
+                {mode === 'starting-live' ? 'Starting Live Camera…' : 'Start Live Camera'}
+              </button>
+
+              <button
+                onClick={startWebXR}
+                disabled={!arSupported || mode === 'starting-webxr'}
+                className="btn-secondary flex items-center justify-center gap-2 px-5 py-4 text-base disabled:opacity-50"
+              >
+                <ScanLine size={18} />
+                {mode === 'starting-webxr'
+                  ? 'Starting Surface AR…'
+                  : arSupported
+                    ? 'Launch Surface AR'
+                    : 'Surface AR Not Supported'}
+              </button>
+            </div>
+
+            <div className="grid w-full max-w-sm grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                onClick={() => captureInputRef.current?.click()}
+                className="btn-secondary flex items-center justify-center gap-2 px-4 py-3 text-sm"
+              >
+                <ImagePlus size={16} />
+                Take Room Photo
+              </button>
+              <button
+                onClick={() => uploadInputRef.current?.click()}
+                className="btn-secondary flex items-center justify-center gap-2 px-4 py-3 text-sm"
+              >
+                <Upload size={16} />
+                Upload From Device
+              </button>
+            </div>
+
+            <div className="glass-card w-full max-w-sm px-4 py-3 text-left">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-accent">How to use</p>
+              <p className="mt-2 text-sm text-text-secondary">
+                1. Add furniture from the catalog below.
+              </p>
+              <p className="text-sm text-text-secondary">
+                2. Select an item, then start live camera or surface AR.
+              </p>
+              <p className="text-sm text-text-secondary">
+                3. Tap on the screen to place or reposition the selected item.
+              </p>
+            </div>
+
+            {mode === 'error' && (
+              <p className="max-w-sm text-sm text-error">{errorMsg}</p>
             )}
-          </button>
-
-          {status === 'error' && (
-            <p className="text-error text-sm text-center px-4">{errorMsg}</p>
-          )}
+          </div>
         </div>
       )}
 
-      {/* AR Active Overlay UI */}
-      {arActive && (
-        <div ref={overlayRef} className="ar-overlay">
-          {/* Top bar */}
-          <div className="absolute top-0 left-0 right-0 flex items-center justify-between p-4">
-            <div className="bg-black/60 backdrop-blur-sm rounded-xl px-4 py-2">
-              <span className="text-white text-sm">
-                {objects.length} item{objects.length !== 1 ? 's' : ''} in scene
-              </span>
-            </div>
-            <button
-              onClick={stopAR}
-              className="bg-black/60 backdrop-blur-sm text-white rounded-xl p-2 hover:bg-black/80"
-            >
-              <X size={20} />
-            </button>
-          </div>
-
-          {/* Placement hint */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-            <p className="text-white/80 text-sm bg-black/40 rounded-full px-4 py-1">
-              Tap on a surface to place furniture
+      <div
+        ref={overlayRef}
+        className={`ar-overlay ${isCameraMode ? '' : 'hidden'}`}
+      >
+        <div className="absolute left-0 right-0 top-0 flex items-start justify-between gap-3 p-3 sm:p-4">
+          <div className="max-w-[70%] rounded-2xl bg-black/65 px-4 py-2 backdrop-blur-sm">
+            <p className="text-xs uppercase tracking-[0.2em] text-white/50">
+              {mode === 'webxr' ? 'Surface AR' : 'Live Camera'}
+            </p>
+            <p className="text-sm text-white">
+              {objects.length === 0
+                ? 'Add furniture from the catalog below first.'
+                : 'Tap anywhere to place the selected furniture.'}
             </p>
           </div>
 
-          {/* Furniture selector (bottom) */}
-          <div className="absolute bottom-24 left-4 right-4">
-            <div className="bg-black/70 backdrop-blur-sm rounded-2xl p-3">
-              <p className="text-white/60 text-xs mb-2 px-1">Select & tap to place:</p>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {objects.map(obj => {
-                  const f = FURNITURE_ITEMS.find(fi => fi.id === obj.furnitureId)
+          <button
+            onClick={stopAllModes}
+            className="rounded-2xl bg-black/65 p-3 text-white backdrop-blur-sm hover:bg-black/80"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {objects.length > 0 && (
+          <div className="absolute bottom-24 left-3 right-3 sm:left-4 sm:right-4">
+            <div className="rounded-2xl bg-black/70 p-3 backdrop-blur-sm">
+              <p className="mb-2 px-1 text-xs text-white/60">Selected furniture</p>
+              <div className="flex gap-2 overflow-x-auto pb-1 custom-scroll">
+                {objects.map((obj) => {
+                  const furniture = FURNITURE_ITEMS.find((item) => item.id === obj.furnitureId)
+                  const isSelected = selectedId === obj.id
+
                   return (
                     <button
                       key={obj.id}
-                      onClick={() => {
-                        placingFurIdRef.current = obj.furnitureId
-                        selectedIdRef.current = obj.id
-                        selectObject(obj.id)
-                      }}
-                      className={`flex-shrink-0 flex flex-col items-center gap-1 px-3 py-2 rounded-xl border transition-all ${
-                        selectedIdRef.current === obj.id
-                          ? 'border-accent bg-accent/20 text-white'
+                      onClick={() => selectObject(obj.id)}
+                      className={`flex min-w-[92px] flex-shrink-0 flex-col items-center gap-1 rounded-xl border px-3 py-2 transition-all ${
+                        isSelected
+                          ? 'border-accent bg-accent/25 text-white'
                           : 'border-white/20 text-white/70'
                       }`}
                     >
-                      <span className="text-xl">{f?.emoji}</span>
-                      <span className="text-xs">{f?.name}</span>
+                      <span className="text-xl">{furniture?.emoji || obj.emoji}</span>
+                      <span className="text-xs">{furniture?.name || obj.name}</span>
                     </button>
                   )
                 })}
               </div>
             </div>
           </div>
+        )}
 
-          {/* Controls (bottom) */}
-          <div className="absolute bottom-4 left-4 right-4">
+        {selectedId && (
+          <div className="absolute bottom-4 left-3 right-3 sm:left-4 sm:right-4">
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={() => rotateSelected(-45)}
-                className="bg-black/70 text-white p-3 rounded-xl border border-white/20 hover:bg-black/90"
+                className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <RotateCcw size={18} />
               </button>
               <button
                 onClick={() => scaleSelected(0.9)}
-                className="bg-black/70 text-white p-3 rounded-xl border border-white/20 hover:bg-black/90"
+                className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <Minus size={18} />
               </button>
               <button
                 onClick={() => scaleSelected(1.1)}
-                className="bg-black/70 text-white p-3 rounded-xl border border-white/20 hover:bg-black/90"
+                className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <Plus size={18} />
               </button>
               <button
                 onClick={() => rotateSelected(45)}
-                className="bg-black/70 text-white p-3 rounded-xl border border-white/20 hover:bg-black/90"
+                className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <RotateCw size={18} />
               </button>
               <button
                 onClick={deleteSelected}
-                className="bg-error/20 text-error p-3 rounded-xl border border-error/30 hover:bg-error/30"
+                className="rounded-xl border border-error/30 bg-error/20 p-3 text-error hover:bg-error/30"
               >
                 <Trash2 size={18} />
               </button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   )
 }

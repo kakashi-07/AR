@@ -25,9 +25,9 @@ export default function Navbar() {
   }
 
   return (
-    <header className="h-14 flex-shrink-0 flex items-center justify-between px-4 bg-bg-secondary border-b border-border z-20">
+    <header className="flex-shrink-0 flex flex-wrap items-center justify-between gap-3 px-3 py-3 sm:px-4 bg-bg-secondary border-b border-border z-20">
       {/* Logo */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-2.5 min-w-0">
         <span className="text-2xl">🛋️</span>
         <div>
           <h1 className="font-display text-base text-text-primary leading-none">AR Visualizer</h1>
@@ -36,10 +36,10 @@ export default function Navbar() {
       </div>
 
       {/* Mode Switcher */}
-      <div className="flex items-center gap-1 bg-bg-elevated rounded-xl p-1 border border-border">
+      <div className="order-3 w-full sm:order-none sm:w-auto flex items-center gap-1 bg-bg-elevated rounded-xl p-1 border border-border overflow-x-auto custom-scroll">
         <button
           onClick={() => setARMode(false)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+          className={`flex-1 sm:flex-none items-center justify-center flex gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
             !isARMode ? 'bg-accent text-bg-primary' : 'text-text-secondary hover:text-text-primary'
           }`}
         >
@@ -48,7 +48,7 @@ export default function Navbar() {
         </button>
         <button
           onClick={() => setARMode(true)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+          className={`flex-1 sm:flex-none items-center justify-center flex gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
             isARMode ? 'bg-accent text-bg-primary' : 'text-text-secondary hover:text-text-primary'
           }`}
         >
@@ -58,10 +58,10 @@ export default function Navbar() {
       </div>
 
       {/* Right actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 ml-auto">
         {/* Upload room photo (desktop mode only) */}
         {!isARMode && (
-          <label className="btn-secondary text-xs px-3 py-1.5 cursor-pointer">
+          <label className="btn-secondary text-xs px-3 py-1.5 cursor-pointer whitespace-nowrap">
             📷 Upload Room Photo
             <input type="file" accept="image/*" onChange={handleUpload} className="hidden" />
           </label>
