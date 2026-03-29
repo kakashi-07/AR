@@ -17,7 +17,7 @@ export default function FurnitureCatalog() {
   }, [activeCategory, searchQuery])
 
   return (
-    <aside className="w-full lg:w-72 flex-shrink-0 flex flex-col h-full bg-bg-secondary lg:border-r border-border min-w-0">
+    <aside className="w-full lg:w-72 flex-shrink-0 flex flex-col h-auto lg:h-full bg-bg-secondary lg:border-r border-border min-w-0">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b border-border">
         <div className="flex items-center justify-between mb-3">
@@ -57,7 +57,7 @@ export default function FurnitureCatalog() {
       </div>
 
       {/* Furniture grid */}
-      <div className="flex-1 overflow-y-auto custom-scroll p-3">
+      <div className="p-3 lg:flex-1 lg:overflow-y-auto custom-scroll">
         {filtered.length === 0 ? (
           <div className="text-center py-12">
             <div className="text-3xl mb-2">🔍</div>

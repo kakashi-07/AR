@@ -52,6 +52,20 @@ export default function MobileARViewer() {
   const pointerRef = useRef(new THREE.Vector2())
   const selectedIdRef = useRef(null)
   const knownObjectIdsRef = useRef(new Set())
+  const dragStateRef = useRef({
+    active: false,
+    pointerId: null,
+    objectId: null,
+    offset: new THREE.Vector3(),
+    mode: 'idle',
+  })
+  const pinchStateRef = useRef({
+    active: false,
+    distance: 0,
+    startScale: 1,
+    touches: new Map(),
+    objectId: null,
+  })
 
   const {
     objects,
@@ -297,6 +311,20 @@ export default function MobileARViewer() {
     setHighlight(mesh, true)
   }, [getSelectedMesh, projectToPlacementPlane, selectObject])
 
+  const moveSelectedToPoint = useCallback((objectId, clientX, clientY, offset = new THREE.Vector3()) => {
+    const mesh = meshMapRef.current[objectId]
+    if (!mesh) return
+
+    const point = projectToPlacementPlane(clientX, clientY, Math.abs(mesh.position.z) || 2.4)
+    if (!point) return
+
+    mesh.position.set(
+      point.x + offset.x,
+      point.y + offset.y,
+      point.z + offset.z
+    )
+  }, [projectToPlacementPlane])
+
   const placeMeshInFrontOfCamera = useCallback((mesh, slotIndex = 0) => {
     if (!mesh) return
 
@@ -310,23 +338,6 @@ export default function MobileARViewer() {
       mesh.scale.setScalar(0.9)
     }
   }, [])
-
-  const handleLiveCanvasTap = useCallback((event) => {
-    if (mode !== 'live') return
-
-    const clientX = event.clientX
-    const clientY = event.clientY
-    if (typeof clientX !== 'number' || typeof clientY !== 'number') return
-
-    const hit = getMeshAtPoint(clientX, clientY)
-    if (hit) {
-      const id = hit.userData.sceneObjId
-      selectObject(id)
-      return
-    }
-
-    placeSelectedAt(clientX, clientY)
-  }, [getMeshAtPoint, mode, placeSelectedAt, selectObject])
 
   useEffect(() => {
     if (mode !== 'live') return
@@ -343,6 +354,139 @@ export default function MobileARViewer() {
 
     knownObjectIdsRef.current = new Set(objects.map((obj) => obj.id))
   }, [mode, objects, placeMeshInFrontOfCamera, selectObject])
+
+  const handlePointerDown = useCallback((event) => {
+    if (mode !== 'live') return
+
+    const clientX = event.clientX
+    const clientY = event.clientY
+    const hit = getMeshAtPoint(clientX, clientY)
+
+    if (hit) {
+      const id = hit.userData.sceneObjId
+      const mesh = meshMapRef.current[id]
+      const point = projectToPlacementPlane(clientX, clientY, Math.abs(mesh?.position.z) || 2.4)
+
+      selectObject(id)
+
+      if (mesh && point) {
+        dragStateRef.current = {
+          active: true,
+          pointerId: event.pointerId,
+          objectId: id,
+          offset: mesh.position.clone().sub(point),
+          mode: 'drag',
+        }
+        canvasRef.current?.setPointerCapture?.(event.pointerId)
+      }
+      return
+    }
+
+    dragStateRef.current = {
+      active: false,
+      pointerId: null,
+      objectId: null,
+      offset: new THREE.Vector3(),
+      mode: 'place',
+    }
+    placeSelectedAt(clientX, clientY)
+  }, [getMeshAtPoint, mode, placeSelectedAt, projectToPlacementPlane, selectObject])
+
+  const handlePointerMove = useCallback((event) => {
+    if (mode !== 'live') return
+    const dragState = dragStateRef.current
+
+    if (!dragState.active || dragState.pointerId !== event.pointerId || !dragState.objectId) {
+      return
+    }
+
+    moveSelectedToPoint(
+      dragState.objectId,
+      event.clientX,
+      event.clientY,
+      dragState.offset
+    )
+  }, [mode, moveSelectedToPoint])
+
+  const handlePointerEnd = useCallback((event) => {
+    const dragState = dragStateRef.current
+    if (dragState.pointerId === event.pointerId) {
+      dragStateRef.current = {
+        active: false,
+        pointerId: null,
+        objectId: null,
+        offset: new THREE.Vector3(),
+        mode: 'idle',
+      }
+      canvasRef.current?.releasePointerCapture?.(event.pointerId)
+    }
+  }, [])
+
+  const handleTouchStart = useCallback((event) => {
+    if (mode !== 'live') return
+
+    const pinchState = pinchStateRef.current
+    Array.from(event.changedTouches).forEach((touch) => {
+      pinchState.touches.set(touch.identifier, {
+        x: touch.clientX,
+        y: touch.clientY,
+      })
+    })
+
+    if (event.touches.length === 2 && selectedIdRef.current) {
+      const [a, b] = Array.from(event.touches)
+      const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const mesh = meshMapRef.current[selectedIdRef.current]
+      if (!mesh) return
+
+      pinchState.active = true
+      pinchState.distance = distance
+      pinchState.startScale = mesh.scale.x
+      pinchState.objectId = selectedIdRef.current
+      dragStateRef.current.active = false
+    }
+  }, [mode])
+
+  const handleTouchMove = useCallback((event) => {
+    if (mode !== 'live') return
+
+    const pinchState = pinchStateRef.current
+    Array.from(event.changedTouches).forEach((touch) => {
+      if (pinchState.touches.has(touch.identifier)) {
+        pinchState.touches.set(touch.identifier, {
+          x: touch.clientX,
+          y: touch.clientY,
+        })
+      }
+    })
+
+    if (event.touches.length === 2 && pinchState.active && pinchState.objectId) {
+      event.preventDefault()
+      const [a, b] = Array.from(event.touches)
+      const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const mesh = meshMapRef.current[pinchState.objectId]
+      if (!mesh || !pinchState.distance) return
+
+      const nextScale = Math.max(
+        0.15,
+        Math.min(4, pinchState.startScale * (distance / pinchState.distance))
+      )
+      mesh.scale.setScalar(nextScale)
+    }
+  }, [mode])
+
+  const handleTouchEnd = useCallback((event) => {
+    const pinchState = pinchStateRef.current
+    Array.from(event.changedTouches).forEach((touch) => {
+      pinchState.touches.delete(touch.identifier)
+    })
+
+    if (event.touches.length < 2) {
+      pinchState.active = false
+      pinchState.distance = 0
+      pinchState.objectId = null
+    }
+  }, [])
 
   const startLiveCamera = useCallback(async () => {
     setErrorMsg('')
@@ -517,7 +661,13 @@ export default function MobileARViewer() {
       <canvas
         ref={canvasRef}
         className={`absolute inset-0 h-full w-full ${isCameraMode ? 'block' : 'hidden'}`}
-        onPointerDown={handleLiveCanvasTap}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         style={{ touchAction: 'none' }}
       />
 
@@ -615,18 +765,7 @@ export default function MobileARViewer() {
         ref={overlayRef}
         className={`ar-overlay ${isCameraMode ? '' : 'hidden'}`}
       >
-        <div className="absolute left-0 right-0 top-0 flex items-start justify-between gap-3 p-3 sm:p-4">
-          <div className="max-w-[70%] rounded-2xl bg-black/65 px-4 py-2 backdrop-blur-sm">
-            <p className="text-xs uppercase tracking-[0.2em] text-white/50">
-              {mode === 'webxr' ? 'Surface AR' : 'Live Camera'}
-            </p>
-            <p className="text-sm text-white">
-              {objects.length === 0
-                ? 'Add furniture from the catalog below first.'
-                : 'Tap anywhere to place the selected furniture.'}
-            </p>
-          </div>
-
+        <div className="absolute left-0 right-0 top-0 flex items-start justify-end gap-3 p-3 sm:p-4">
           <button
             onClick={stopAllModes}
             className="rounded-2xl bg-black/65 p-3 text-white backdrop-blur-sm hover:bg-black/80"
@@ -635,7 +774,7 @@ export default function MobileARViewer() {
           </button>
         </div>
 
-        {objects.length > 0 && (
+        {objects.length > 0 && mode === 'webxr' && (
           <div className="absolute bottom-24 left-3 right-3 sm:left-4 sm:right-4">
             <div className="rounded-2xl bg-black/70 p-3 backdrop-blur-sm">
               <p className="mb-2 px-1 text-xs text-white/60">Selected furniture</p>
@@ -697,14 +836,6 @@ export default function MobileARViewer() {
               >
                 <Trash2 size={18} />
               </button>
-            </div>
-          </div>
-        )}
-
-        {mode === 'live' && (
-          <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center pointer-events-none">
-            <div className="rounded-full bg-black/40 px-4 py-1 text-xs text-white/80 backdrop-blur-sm">
-              Tap anywhere in the camera view to place the selected item
             </div>
           </div>
         )}

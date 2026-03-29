@@ -40,7 +40,7 @@ export default function ScenePanel() {
   }
 
   return (
-    <aside className="w-full lg:w-56 flex-shrink-0 flex flex-col h-full bg-bg-secondary lg:border-l border-border min-w-0">
+    <aside className="w-full lg:w-56 flex-shrink-0 flex flex-col h-auto lg:h-full bg-bg-secondary lg:border-l border-border min-w-0">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b border-border">
         <div className="flex items-center justify-between">
@@ -53,7 +53,7 @@ export default function ScenePanel() {
       </div>
 
       {/* Objects list */}
-      <div className="flex-1 overflow-y-auto custom-scroll p-3 space-y-1.5">
+      <div className="p-3 space-y-1.5 lg:flex-1 lg:overflow-y-auto custom-scroll">
         {objects.length === 0 ? (
           <div className="text-center py-8">
             <div className="text-2xl mb-2">🏠</div>
