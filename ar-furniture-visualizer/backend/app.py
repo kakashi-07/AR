@@ -17,7 +17,7 @@ import sqlite3
 from datetime import timedelta, datetime
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify, g
+from flask import Flask, request, jsonify, g, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager,
@@ -30,17 +30,29 @@ from werkzeug.security import generate_password_hash, check_password_hash
 # ── Load .env ──────────────────────────────────────────────────────────
 load_dotenv()
 
+BASE_DIR = os.path.dirname(__file__)
+FRONTEND_DIST_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "dist"))
+
 # ── App setup ──────────────────────────────────────────────────────────
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=FRONTEND_DIST_DIR if os.path.isdir(FRONTEND_DIST_DIR) else None,
+    static_url_path="",
+)
 
 app.config["JWT_SECRET_KEY"]         = os.getenv("JWT_SECRET_KEY", "dev-secret-please-change")
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(days=7)
 
 jwt  = JWTManager(app)
-CORS(app, resources={r"/api/*": {"origins": "*"}})   # allow all origins in dev
+
+cors_origins = os.getenv("CORS_ORIGINS", "*")
+allowed_origins = "*" if cors_origins == "*" else [
+    origin.strip() for origin in cors_origins.split(",") if origin.strip()
+]
+CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 
 # ── SQLite helpers ─────────────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(__file__), "ar_furniture.db")
+DB_PATH = os.path.join(BASE_DIR, "ar_furniture.db")
 
 def get_db():
     """Return a per-request SQLite connection (stored on flask g)."""
@@ -93,9 +105,12 @@ def init_db():
                 ),
             )
             db.commit()
-            print("✅  Demo account created  →  demo@arfurniture.com / demo123")
+            print("Demo account created -> demo@arfurniture.com / demo123")
         else:
-            print("✅  Database ready")
+            print("Database ready")
+
+
+init_db()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -289,6 +304,22 @@ def health():
     return ok({"status": "ok", "backend": "Flask + SQLite"})
 
 
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    if path.startswith("api/"):
+        return bad("Not found.", 404)
+
+    if not app.static_folder or not os.path.isdir(app.static_folder):
+        return bad("Frontend build not found.", 404)
+
+    requested_path = os.path.join(app.static_folder, path)
+    if path and os.path.exists(requested_path):
+        return send_from_directory(app.static_folder, path)
+
+    return send_from_directory(app.static_folder, "index.html")
+
+
 # ════════════════════════════════════════════════════════════════════════
 #  JWT error handlers
 # ════════════════════════════════════════════════════════════════════════
@@ -309,7 +340,7 @@ def invalid_callback(reason):
 #  ENTRY POINT
 # ════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    print("🚀  Starting AR Furniture Visualizer — Flask backend")
-    init_db()
-    port = int(os.getenv("FLASK_PORT", 8000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    print("Starting AR Furniture Visualizer Flask backend")
+    port = int(os.getenv("PORT", os.getenv("FLASK_PORT", 8000)))
+    debug = os.getenv("FLASK_ENV", "").lower() == "development"
+    app.run(host="0.0.0.0", port=port, debug=debug)

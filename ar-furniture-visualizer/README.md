@@ -29,6 +29,28 @@ npm run dev
 
 ✅ App opens at `http://localhost:5173`
 
+### 3 — Render Deploy
+
+Local development works because Vite proxies `frontend -> backend` at `/api`.
+On Render, that proxy does not exist unless both are served from the same backend service.
+
+If you deploy **frontend and backend as separate Render services**:
+
+1. Deploy the backend service from `backend/`
+2. Set backend env vars:
+   - `JWT_SECRET_KEY`
+   - `PORT` is provided automatically by Render
+   - `CORS_ORIGINS=https://your-frontend-site.onrender.com`
+3. Deploy the frontend service from `frontend/`
+4. Set frontend env var:
+   - `VITE_API_BASE_URL=https://your-backend-service.onrender.com/api`
+
+If you deploy **a single backend service**:
+
+1. Build the frontend first with `npm install && npm run build` inside `frontend/`
+2. Deploy the backend from `backend/`
+3. The Flask app will serve `frontend/dist` and `/api/*` from the same origin
+
 ---
 
 ## 🗂️ Project Structure
