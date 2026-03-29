@@ -78,7 +78,10 @@ export default function MobileARViewer() {
   })
   const webxrPlacementRef = useRef({
     inProgress: false,
+    ignoreSelectUntil: 0,
   })
+  const placementStatusRef = useRef('Move your phone to find a flat surface.')
+  const surfaceStateRef = useRef('searching')
 
   const {
     objects,
@@ -110,6 +113,12 @@ export default function MobileARViewer() {
       .catch(() => setArSupported(false))
   }, [])
 
+  const updatePlacementStatus = useCallback((nextStatus) => {
+    if (!nextStatus || placementStatusRef.current === nextStatus) return
+    placementStatusRef.current = nextStatus
+    setPlacementStatus(nextStatus)
+  }, [])
+
   const resetInteractionState = useCallback(() => {
     dragStateRef.current = {
       active: false,
@@ -131,7 +140,21 @@ export default function MobileARViewer() {
 
     liveInteractionRef.current.pinchInProgress = false
     webxrPlacementRef.current.inProgress = false
+    webxrPlacementRef.current.ignoreSelectUntil = 0
+    surfaceStateRef.current = 'searching'
   }, [])
+
+  const getSceneObjectById = useCallback((id) => {
+    if (!id) return null
+    return objects.find((obj) => obj.id === id) || null
+  }, [objects])
+
+  const protectOverlayInteraction = useCallback((event) => {
+    if (mode !== 'webxr') return
+    event.preventDefault()
+    event.stopPropagation()
+    webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
+  }, [mode])
 
   const persistMeshTransform = useCallback((id, mesh) => {
     if (!id || !mesh) return
@@ -146,6 +169,40 @@ export default function MobileARViewer() {
       },
     })
   }, [updateTransform])
+
+  const applyComfortableSurfaceScale = useCallback((sceneObjId, mesh) => {
+    if (!sceneObjId || !mesh) return
+
+    const sceneObj = getSceneObjectById(sceneObjId)
+    if (!sceneObj) return
+
+    const existingScale = sceneObj.scale ?? 1
+    if (Math.abs(existingScale - 1) > 0.001) {
+      mesh.scale.setScalar(existingScale)
+      return
+    }
+
+    const furniture = FURNITURE_ITEMS.find((item) => item.id === sceneObj.furnitureId)
+    const dims = furniture?.dimensions
+    if (!dims) {
+      mesh.scale.setScalar(0.7)
+      return
+    }
+
+    const largestDimension = Math.max(dims.w || 0, dims.h || 0, dims.d || 0)
+    let targetLargestDimension = 0.9
+    if (largestDimension >= 1.8) {
+      targetLargestDimension = 1.15
+    } else if (largestDimension >= 1.2) {
+      targetLargestDimension = 1.0
+    }
+
+    const scaleFactor = Math.max(
+      0.45,
+      Math.min(0.85, targetLargestDimension / Math.max(largestDimension, 0.001))
+    )
+    mesh.scale.setScalar(scaleFactor)
+  }, [getSceneObjectById])
 
   const cleanupRenderer = useCallback(() => {
     if (rendererRef.current) {
@@ -200,9 +257,9 @@ export default function MobileARViewer() {
 
     stopLiveStream()
     cleanupRenderer()
-    setPlacementStatus('Move your phone to find a flat surface.')
+    updatePlacementStatus('Move your phone to find a flat surface.')
     setMode('idle')
-  }, [cleanupRenderer, stopLiveStream])
+  }, [cleanupRenderer, stopLiveStream, updatePlacementStatus])
 
   useEffect(() => {
     return () => {
@@ -322,6 +379,19 @@ export default function MobileARViewer() {
     }
   }, [objects])
 
+  const getSurfaceStatusMessage = useCallback((surfaceState = surfaceStateRef.current) => {
+    const selected = getSelectedMesh()
+    if (surfaceState === 'ready') {
+      return selected?.id
+        ? `Surface ready. Tap to place or move ${selected.name || 'selected item'}.`
+        : 'Surface ready. Add or select a furniture item to place it.'
+    }
+
+    return selected?.id
+      ? `Scanning for a flat surface for ${selected.name || 'selected item'}…`
+      : 'Scanning for a flat surface…'
+  }, [getSelectedMesh])
+
   const setCanvasPointer = useCallback((clientX, clientY) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return false
@@ -412,6 +482,8 @@ export default function MobileARViewer() {
   const placeMeshOnReticle = useCallback((mesh, reticleMatrix) => {
     if (!mesh || !reticleMatrix) return false
 
+    applyComfortableSurfaceScale(mesh.userData.sceneObjId, mesh)
+
     const position = new THREE.Vector3()
     const rotation = new THREE.Quaternion()
     const scale = new THREE.Vector3()
@@ -426,7 +498,7 @@ export default function MobileARViewer() {
     mesh.position.set(position.x, position.y + bottomOffset, position.z)
     mesh.rotation.set(0, euler.y, 0)
     return true
-  }, [])
+  }, [applyComfortableSurfaceScale])
 
   useEffect(() => {
     if (mode !== 'live') return
@@ -449,13 +521,19 @@ export default function MobileARViewer() {
 
     const knownIds = knownObjectIdsRef.current
     const newObjects = objects.filter((obj) => !knownIds.has(obj.id))
+    const hasNewObjects = newObjects.length > 0
 
-    if (newObjects.length > 0) {
+    if (hasNewObjects) {
       selectObject(newObjects[newObjects.length - 1].id)
     }
 
+    updatePlacementStatus(
+      hasNewObjects
+        ? getSurfaceStatusMessage(surfaceStateRef.current)
+        : getSurfaceStatusMessage(surfaceStateRef.current)
+    )
     knownObjectIdsRef.current = new Set(objects.map((obj) => obj.id))
-  }, [mode, objects, selectObject])
+  }, [getSurfaceStatusMessage, mode, objects, selectObject, updatePlacementStatus])
 
   const handlePointerDown = useCallback((event) => {
     if (mode !== 'live') return
@@ -696,7 +774,7 @@ export default function MobileARViewer() {
     }
 
     setErrorMsg('')
-    setPlacementStatus('Move your phone to find a flat surface.')
+    updatePlacementStatus('Move your phone to find a flat surface.')
     setMode('starting-webxr')
 
     try {
@@ -763,6 +841,8 @@ export default function MobileARViewer() {
       hitSrcRef.current = hitSource
 
       session.addEventListener('select', async () => {
+        if (performance.now() < webxrPlacementRef.current.ignoreSelectUntil) return
+
         const selected = getSelectedMesh()
         const mesh = selected?.mesh
         const reticleMesh = reticleRef.current
@@ -770,7 +850,7 @@ export default function MobileARViewer() {
         if (!mesh || !reticleMesh?.visible || webxrPlacementRef.current.inProgress) return
 
         webxrPlacementRef.current.inProgress = true
-        setPlacementStatus(`Placing ${selected.name || 'selected item'}…`)
+        updatePlacementStatus(`Placing ${selected.name || 'selected item'}…`)
 
         try {
           const placed = placeMeshOnReticle(mesh, reticleMesh.matrix)
@@ -779,7 +859,7 @@ export default function MobileARViewer() {
           selectObject(selected.id)
           setHighlight(mesh, true)
           persistMeshTransform(selected.id, mesh)
-          setPlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
+          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
 
           const hitResult = latestHitResultRef.current
           if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
@@ -799,7 +879,7 @@ export default function MobileARViewer() {
         sessionRef.current = null
         cleanupRenderer()
         setWebxrFeatureLevel('none')
-        setPlacementStatus('Move your phone to find a flat surface.')
+        updatePlacementStatus('Move your phone to find a flat surface.')
         setMode('idle')
       })
 
@@ -813,22 +893,18 @@ export default function MobileARViewer() {
           if (pose && reticleRef.current) {
             reticleRef.current.visible = true
             reticleRef.current.matrix.fromArray(pose.transform.matrix)
-            const selected = getSelectedMesh()
-            setPlacementStatus(
-              selected?.id
-                ? `Surface ready. Tap to place or move ${selected.name || 'selected item'}.`
-                : 'Surface ready. Add or select a furniture item to place it.'
-            )
+            if (surfaceStateRef.current !== 'ready') {
+              surfaceStateRef.current = 'ready'
+              updatePlacementStatus(getSurfaceStatusMessage('ready'))
+            }
           }
         } else if (reticleRef.current) {
           latestHitResultRef.current = null
           reticleRef.current.visible = false
-          const selected = getSelectedMesh()
-          setPlacementStatus(
-            selected?.id
-              ? `Scanning for a flat surface for ${selected.name || 'selected item'}…`
-              : 'Scanning for a flat surface…'
-          )
+          if (surfaceStateRef.current !== 'searching') {
+            surfaceStateRef.current = 'searching'
+            updatePlacementStatus(getSurfaceStatusMessage('searching'))
+          }
         }
 
         if (activeFeatureLevel === 'anchors') {
@@ -866,9 +942,9 @@ export default function MobileARViewer() {
       setWebxrFeatureLevel('none')
       setMode('error')
       setErrorMsg(error?.message || 'Could not start surface AR.')
-      setPlacementStatus('Move your phone to find a flat surface.')
+      updatePlacementStatus('Move your phone to find a flat surface.')
     }
-  }, [arSupported, cleanupRenderer, getSelectedMesh, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes])
+  }, [arSupported, cleanupRenderer, getSurfaceStatusMessage, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
 
   const rotateSelected = useCallback((deg) => {
     const selected = getSelectedMesh()
@@ -882,6 +958,7 @@ export default function MobileARViewer() {
     const selected = getSelectedMesh()
     if (!selected?.mesh) return
 
+    webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
     const nextScale = Math.max(0.15, Math.min(4, selected.mesh.scale.x * factor))
     selected.mesh.scale.setScalar(nextScale)
     selectObject(selected.id)
@@ -1046,6 +1123,8 @@ export default function MobileARViewer() {
         <div className="absolute left-0 right-0 top-0 flex items-start justify-end gap-3 p-3 sm:p-4">
           <button
             onClick={stopAllModes}
+            onPointerDown={protectOverlayInteraction}
+            onTouchStart={protectOverlayInteraction}
             className="rounded-2xl bg-black/65 p-3 text-white backdrop-blur-sm hover:bg-black/80"
           >
             <X size={18} />
@@ -1083,6 +1162,8 @@ export default function MobileARViewer() {
                     <button
                       key={obj.id}
                       onClick={() => selectObject(obj.id)}
+                      onPointerDown={protectOverlayInteraction}
+                      onTouchStart={protectOverlayInteraction}
                       className={`flex min-w-[92px] flex-shrink-0 flex-col items-center gap-1 rounded-xl border px-3 py-2 transition-all ${
                         isSelected
                           ? 'border-accent bg-accent/25 text-white'
@@ -1120,30 +1201,40 @@ export default function MobileARViewer() {
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={() => rotateSelected(-45)}
+                onPointerDown={protectOverlayInteraction}
+                onTouchStart={protectOverlayInteraction}
                 className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <RotateCcw size={18} />
               </button>
               <button
                 onClick={() => scaleSelected(0.9)}
+                onPointerDown={protectOverlayInteraction}
+                onTouchStart={protectOverlayInteraction}
                 className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <Minus size={18} />
               </button>
               <button
                 onClick={() => scaleSelected(1.1)}
+                onPointerDown={protectOverlayInteraction}
+                onTouchStart={protectOverlayInteraction}
                 className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <Plus size={18} />
               </button>
               <button
                 onClick={() => rotateSelected(45)}
+                onPointerDown={protectOverlayInteraction}
+                onTouchStart={protectOverlayInteraction}
                 className="rounded-xl border border-white/20 bg-black/70 p-3 text-white hover:bg-black/90"
               >
                 <RotateCw size={18} />
               </button>
               <button
                 onClick={deleteSelected}
+                onPointerDown={protectOverlayInteraction}
+                onTouchStart={protectOverlayInteraction}
                 className="rounded-xl border border-error/30 bg-error/20 p-3 text-error hover:bg-error/30"
               >
                 <Trash2 size={18} />
