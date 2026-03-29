@@ -40,7 +40,7 @@ export default function ScenePanel() {
   }
 
   return (
-    <aside className="w-full lg:w-56 flex-shrink-0 flex flex-col h-auto lg:h-full bg-bg-secondary lg:border-l border-border min-w-0">
+    <aside className="w-full lg:w-52 flex-shrink-0 flex flex-col h-auto lg:h-full bg-bg-secondary lg:border-l border-border min-w-0">
       {/* Header */}
       <div className="px-4 pt-4 pb-3 border-b border-border">
         <div className="flex items-center justify-between">
