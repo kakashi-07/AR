@@ -59,10 +59,16 @@ function getProjectedScreenRect(group, camera, viewportRect) {
   let maxX = -Infinity
   let maxY = -Infinity
   let visible = false
+  let depthSum = 0
+  let depthCount = 0
 
   corners.forEach((corner) => {
     corner.project(camera)
     if (corner.z >= -1 && corner.z <= 1) visible = true
+    if (corner.z >= -1 && corner.z <= 1) {
+      depthSum += corner.z
+      depthCount += 1
+    }
     const screenX = viewportRect.left + ((corner.x + 1) * 0.5 * viewportRect.width)
     const screenY = viewportRect.top + ((1 - corner.y) * 0.5 * viewportRect.height)
     minX = Math.min(minX, screenX)
@@ -72,7 +78,14 @@ function getProjectedScreenRect(group, camera, viewportRect) {
   })
 
   if (!visible) return null
-  return { minX, minY, maxX, maxY }
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    area: Math.max(1, (maxX - minX) * (maxY - minY)),
+    depth: depthCount ? depthSum / depthCount : Infinity,
+  }
 }
 
 export default function MobileARViewer() {
@@ -484,6 +497,7 @@ export default function MobileARViewer() {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return null
 
+    const insideCandidates = []
     let nearest = null
     let bestDistance = 90
 
@@ -491,12 +505,28 @@ export default function MobileARViewer() {
       const projectedRect = getProjectedScreenRect(group, cameraRef.current, rect)
       if (!projectedRect) return
 
+      const tightRect = {
+        minX: projectedRect.minX,
+        minY: projectedRect.minY,
+        maxX: projectedRect.maxX,
+        maxY: projectedRect.maxY,
+      }
       const expandedRect = {
         minX: projectedRect.minX - 22,
         minY: projectedRect.minY - 22,
         maxX: projectedRect.maxX + 22,
         maxY: projectedRect.maxY + 22,
       }
+      const insideTight =
+        clientX >= tightRect.minX &&
+        clientX <= tightRect.maxX &&
+        clientY >= tightRect.minY &&
+        clientY <= tightRect.maxY
+
+      if (insideTight) {
+        insideCandidates.push({ group, projectedRect })
+      }
+
       const distance = distanceToScreenRect(clientX, clientY, expandedRect)
 
       if (distance < bestDistance) {
@@ -504,6 +534,16 @@ export default function MobileARViewer() {
         nearest = group
       }
     })
+
+    if (insideCandidates.length > 0) {
+      insideCandidates.sort((a, b) => {
+        if (Math.abs(a.projectedRect.area - b.projectedRect.area) > 1) {
+          return a.projectedRect.area - b.projectedRect.area
+        }
+        return a.projectedRect.depth - b.projectedRect.depth
+      })
+      return insideCandidates[0].group
+    }
 
     return nearest
   }, [getFurnitureRoot, setCanvasPointer])
