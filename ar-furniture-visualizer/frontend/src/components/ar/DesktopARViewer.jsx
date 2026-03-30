@@ -5,7 +5,7 @@
  * - Interactive 3D furniture placement
  * - Drag to move, scroll to scale, R to rotate, Delete to remove
  */
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import * as THREE from 'three'
 import { useScene } from '../../contexts/SceneContext'
 import { buildFurniture, applyColor, setHighlight } from '../../utils/furnitureBuilder'
@@ -20,27 +20,16 @@ function loadImage(src) {
   })
 }
 
-function drawCoverImage(ctx, img, width, height) {
-  const imageAspect = img.width / img.height
-  const canvasAspect = width / height
-
-  let sx = 0
-  let sy = 0
-  let sw = img.width
-  let sh = img.height
-
-  if (imageAspect > canvasAspect) {
-    sw = img.height * canvasAspect
-    sx = (img.width - sw) / 2
-  } else {
-    sh = img.width / canvasAspect
-    sy = (img.height - sh) / 2
-  }
-
-  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height)
+function drawExactImage(ctx, img, width, height) {
+  ctx.drawImage(img, 0, 0, width, height)
 }
 
 export default function DesktopARViewer() {
+  const [isCompactMobile, setIsCompactMobile] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.innerWidth < 768
+  })
+  const viewportRef = useRef(null)
   const containerRef = useRef(null)
   const canvasRef    = useRef(null)
   const rendererRef  = useRef(null)
@@ -54,6 +43,8 @@ export default function DesktopARViewer() {
   const raycasterRef  = useRef(new THREE.Raycaster())
   const mouseRef      = useRef(new THREE.Vector2())
   const rafRef        = useRef(null)
+  const [roomImageSize, setRoomImageSize] = useState(null)
+  const [stageSize, setStageSize] = useState(null)
   const {
     objects, selectedId, roomImage,
     selectObject, removeObject, updateTransform,
@@ -79,8 +70,72 @@ export default function DesktopARViewer() {
     })
   }, [updateTransform])
 
+  useEffect(() => {
+    let cancelled = false
+
+    if (!roomImage) {
+      setRoomImageSize(null)
+      return
+    }
+
+    loadImage(roomImage)
+      .then((img) => {
+        if (!cancelled) {
+          setRoomImageSize({ width: img.width, height: img.height })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRoomImageSize(null)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [roomImage])
+
+  useEffect(() => {
+    const updateStageSize = () => {
+      const viewport = viewportRef.current
+      if (!viewport) return
+
+      const viewportWidth = viewport.clientWidth
+      const viewportHeight = viewport.clientHeight
+
+      if (!viewportWidth || !viewportHeight) return
+
+      if (!roomImageSize?.width || !roomImageSize?.height) {
+        setStageSize({ width: viewportWidth, height: viewportHeight })
+        return
+      }
+
+      const imageAspect = roomImageSize.width / roomImageSize.height
+      let nextWidth = viewportWidth
+      let nextHeight = nextWidth / imageAspect
+
+      if (nextHeight > viewportHeight) {
+        nextHeight = viewportHeight
+        nextWidth = nextHeight * imageAspect
+      }
+
+      setStageSize({
+        width: Math.max(1, Math.round(nextWidth)),
+        height: Math.max(1, Math.round(nextHeight)),
+      })
+    }
+
+    updateStageSize()
+    window.addEventListener('resize', updateStageSize)
+    return () => window.removeEventListener('resize', updateStageSize)
+  }, [roomImageSize])
+
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
+    const updateViewportMode = () => {
+      setIsCompactMobile(window.innerWidth < 768)
+    }
+
     const container = containerRef.current
     if (!container) return
 
@@ -158,18 +213,26 @@ export default function DesktopARViewer() {
 
     // Resize handler
     const onResize = () => {
+      updateViewportMode()
       const cw = container.clientWidth
       const ch = container.clientHeight
+      if (!cw || !ch) return
       camera.aspect = cw / ch
       camera.updateProjectionMatrix()
       renderer.setSize(cw, ch)
     }
-    window.addEventListener('resize', onResize)
+
+    const resizeObserver = new ResizeObserver(onResize)
+    resizeObserver.observe(container)
+    updateViewportMode()
+    onResize()
+    window.addEventListener('resize', updateViewportMode)
 
     return () => {
       cancelAnimationFrame(rafRef.current)
       renderer.dispose()
-      window.removeEventListener('resize', onResize)
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', updateViewportMode)
     }
   }, [])
 
@@ -431,7 +494,9 @@ export default function DesktopARViewer() {
 
       if (roomImage) {
         const bg = await loadImage(roomImage)
-        drawCoverImage(ctx, bg, exportCanvas.width, exportCanvas.height)
+        exportCanvas.width = bg.width
+        exportCanvas.height = bg.height
+        drawExactImage(ctx, bg, exportCanvas.width, exportCanvas.height)
       } else {
         const gradient = ctx.createLinearGradient(0, 0, 0, exportCanvas.height)
         gradient.addColorStop(0, '#1a1a28')
@@ -458,45 +523,55 @@ export default function DesktopARViewer() {
   }, [persistTransform, roomImage])
 
   return (
-    <div ref={containerRef} className="relative w-full h-full overflow-hidden rounded-2xl">
-      {/* Room photo background */}
-      {roomImage ? (
-        <img
-          src={roomImage}
-          alt="Room"
-          className="absolute inset-0 w-full h-full object-cover"
-          style={{ filter: 'brightness(0.88) saturate(0.9)' }}
-        />
-      ) : (
-        /* Default floor pattern when no photo uploaded */
+    <div ref={viewportRef} className="relative w-full h-full overflow-hidden rounded-2xl bg-bg-secondary">
+      <div className="absolute inset-0 flex items-center justify-center">
         <div
-          className="absolute inset-0"
-          style={{
-            background: 'linear-gradient(180deg, #1a1a28 0%, #22222e 60%, #2a2a3a 100%)',
-            backgroundImage: `
-              linear-gradient(rgba(212,165,116,0.04) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(212,165,116,0.04) 1px, transparent 1px)
-            `,
-            backgroundSize: '80px 80px',
-          }}
-        />
-      )}
+          ref={containerRef}
+          className="relative overflow-hidden rounded-2xl"
+          style={stageSize
+            ? { width: `${stageSize.width}px`, height: `${stageSize.height}px` }
+            : { width: '100%', height: '100%' }}
+        >
+          {/* Room photo background */}
+          {roomImage ? (
+            <img
+              src={roomImage}
+              alt="Room"
+              className="absolute inset-0 w-full h-full object-contain"
+              style={{ filter: 'brightness(0.92) saturate(0.96)' }}
+            />
+          ) : (
+            /* Default floor pattern when no photo uploaded */
+            <div
+              className="absolute inset-0"
+              style={{
+                background: 'linear-gradient(180deg, #1a1a28 0%, #22222e 60%, #2a2a3a 100%)',
+                backgroundImage: `
+                  linear-gradient(rgba(212,165,116,0.04) 1px, transparent 1px),
+                  linear-gradient(90deg, rgba(212,165,116,0.04) 1px, transparent 1px)
+                `,
+                backgroundSize: '80px 80px',
+              }}
+            />
+          )}
 
-      {/* Three.js Canvas (transparent bg overlaid on photo) */}
-      <canvas
-        id="ar-canvas"
-        ref={canvasRef}
-        className="absolute inset-0 w-full h-full"
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        style={{ touchAction: 'none' }}
-      />
+          {/* Three.js Canvas (transparent bg overlaid on photo) */}
+          <canvas
+            id="ar-canvas"
+            ref={canvasRef}
+            className="absolute inset-0 w-full h-full"
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+            onWheel={handleWheel}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{ touchAction: 'none' }}
+          />
+        </div>
+      </div>
 
       {/* Instructions overlay */}
       {objects.length === 0 && (
@@ -512,7 +587,7 @@ export default function DesktopARViewer() {
       )}
 
       {/* Controls hint */}
-      {objects.length > 0 && (
+      {objects.length > 0 && !isCompactMobile && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none">
           <div className="bg-black/70 backdrop-blur-sm text-text-secondary text-xs px-4 py-2 rounded-full flex gap-4">
             <span>🖱️ Drag to move</span>

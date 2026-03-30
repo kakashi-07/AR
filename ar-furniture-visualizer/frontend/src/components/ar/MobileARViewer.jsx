@@ -178,6 +178,18 @@ export default function MobileARViewer() {
     })
   }, [updateTransform])
 
+  const refreshObjectAnchor = useCallback(async (objectId) => {
+    const hitResult = latestHitResultRef.current
+    if (webxrFeatureLevel !== 'anchors' || !hitResult?.createAnchor || !objectId) return
+
+    try {
+      anchorMapRef.current[objectId]?.delete?.()
+      anchorMapRef.current[objectId] = await hitResult.createAnchor()
+    } catch {
+      // Keep local-space placement when anchors cannot be refreshed.
+    }
+  }, [webxrFeatureLevel])
+
   const applyComfortableSurfaceScale = useCallback((sceneObjId, mesh) => {
     if (!sceneObjId || !mesh) return
 
@@ -421,31 +433,6 @@ export default function MobileARViewer() {
     return getFurnitureRoot(hits[0].object)
   }, [getFurnitureRoot, setCanvasPointer])
 
-  const getWebXRObjectHit = useCallback((event, refSpace) => {
-    const frame = event?.frame
-    const inputSource = event?.inputSource
-    if (!frame || !inputSource || !refSpace) return null
-
-    const pose = frame.getPose(inputSource.targetRaySpace, refSpace)
-    if (!pose) return null
-
-    const rayMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix)
-    const origin = new THREE.Vector3()
-    const orientation = new THREE.Quaternion()
-    const scale = new THREE.Vector3()
-    const direction = new THREE.Vector3(0, 0, -1)
-
-    rayMatrix.decompose(origin, orientation, scale)
-    direction.applyQuaternion(orientation).normalize()
-
-    raycasterRef.current.set(origin, direction)
-    const meshes = Object.values(meshMapRef.current).filter((mesh) => mesh.visible)
-    const hits = raycasterRef.current.intersectObjects(meshes, true)
-
-    if (!hits.length) return null
-    return getFurnitureRoot(hits[0].object)
-  }, [getFurnitureRoot])
-
   const projectToPlacementPlane = useCallback((clientX, clientY, depth = 2.4) => {
     if (!setCanvasPointer(clientX, clientY) || !cameraRef.current) return null
 
@@ -528,6 +515,12 @@ export default function MobileARViewer() {
     mesh.rotation.set(0, euler.y, 0)
     return true
   }, [applyComfortableSurfaceScale])
+
+  const releaseWebXRInteractionLock = useCallback((delay = 320) => {
+    window.setTimeout(() => {
+      webxrPlacementRef.current.inProgress = false
+    }, delay)
+  }, [])
 
   useEffect(() => {
     if (mode !== 'live') return
@@ -860,28 +853,22 @@ export default function MobileARViewer() {
 
       sessionRef.current = session
       setWebxrFeatureLevel(activeFeatureLevel)
-      renderer.xr.setReferenceSpaceType('local')
+      renderer.xr.setReferenceSpaceType('local-floor')
       await renderer.xr.setSession(session)
 
-      const refSpace = await session.requestReferenceSpace('local')
+      let refSpace
+      try {
+        refSpace = await session.requestReferenceSpace('local-floor')
+      } catch {
+        refSpace = await session.requestReferenceSpace('local')
+      }
       refSpaceRef.current = refSpace
       const viewerSpace = await session.requestReferenceSpace('viewer')
       const hitSource = await session.requestHitTestSource({ space: viewerSpace })
       hitSrcRef.current = hitSource
 
-      session.addEventListener('select', async (event) => {
+      session.addEventListener('select', async () => {
         if (performance.now() < webxrPlacementRef.current.ignoreSelectUntil) return
-
-        const tappedMesh = getWebXRObjectHit(event, refSpace)
-        if (tappedMesh?.userData?.sceneObjId) {
-          const tappedId = tappedMesh.userData.sceneObjId
-          const tappedObject = getSceneObjectById(tappedId)
-          selectObject(tappedId)
-          updatePlacementStatus(
-            `Selected ${tappedObject?.name || 'item'}. Use the controls below to resize or rotate it.`
-          )
-          return
-        }
 
         const selected = getSelectedMesh()
         const mesh = selected?.mesh
@@ -890,6 +877,7 @@ export default function MobileARViewer() {
         if (!mesh || !reticleMesh?.visible || webxrPlacementRef.current.inProgress) return
 
         webxrPlacementRef.current.inProgress = true
+        webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 450
         updatePlacementStatus(`Placing ${selected.name || 'selected item'}…`)
 
         try {
@@ -899,19 +887,10 @@ export default function MobileARViewer() {
           selectObject(selected.id)
           setHighlight(mesh, true)
           persistMeshTransform(selected.id, mesh)
-          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
-
-          const hitResult = latestHitResultRef.current
-          if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
-            try {
-              anchorMapRef.current[selected.id]?.delete?.()
-              anchorMapRef.current[selected.id] = await hitResult.createAnchor()
-            } catch {
-              // Anchors are optional; keep the local-space placement as fallback.
-            }
-          }
+          await refreshObjectAnchor(selected.id)
+          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap the surface again to move it.`)
         } finally {
-          webxrPlacementRef.current.inProgress = false
+          releaseWebXRInteractionLock()
         }
       })
 
@@ -961,15 +940,6 @@ export default function MobileARViewer() {
               anchorPose.transform.position.y,
               anchorPose.transform.position.z
             )
-            const anchorQuaternion = new THREE.Quaternion(
-              anchorPose.transform.orientation.x,
-              anchorPose.transform.orientation.y,
-              anchorPose.transform.orientation.z,
-              anchorPose.transform.orientation.w
-            )
-            const anchorEuler = new THREE.Euler(0, 0, 0, 'YXZ')
-            anchorEuler.setFromQuaternion(anchorQuaternion)
-            mesh.rotation.set(0, anchorEuler.y, 0)
           })
         }
 
@@ -984,7 +954,7 @@ export default function MobileARViewer() {
       setErrorMsg(error?.message || 'Could not start surface AR.')
       updatePlacementStatus('Move your phone to find a flat surface.')
     }
-  }, [arSupported, cleanupRenderer, getSceneObjectById, getSelectedMesh, getSurfaceStatusMessage, getWebXRObjectHit, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
+  }, [arSupported, cleanupRenderer, getSelectedMesh, getSurfaceStatusMessage, persistMeshTransform, placeMeshOnReticle, refreshObjectAnchor, releaseWebXRInteractionLock, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
 
   const rotateSelected = useCallback((deg) => {
     const selected = getSelectedMesh()
@@ -998,19 +968,24 @@ export default function MobileARViewer() {
     const selected = getSelectedMesh()
     if (!selected?.mesh) return
 
+    webxrPlacementRef.current.inProgress = true
     webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
     const nextScale = Math.max(0.15, Math.min(4, selected.mesh.scale.x * factor))
     selected.mesh.scale.setScalar(nextScale)
     selectObject(selected.id)
     persistMeshTransform(selected.id, selected.mesh)
-  }, [getSelectedMesh, persistMeshTransform, selectObject])
+    releaseWebXRInteractionLock(220)
+  }, [getSelectedMesh, persistMeshTransform, releaseWebXRInteractionLock, selectObject])
 
   const deleteSelected = useCallback(() => {
     const id = selectedIdRef.current
     if (!id) return
+    webxrPlacementRef.current.inProgress = true
+    webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
     removeObject(id)
     selectObject(null)
-  }, [removeObject, selectObject])
+    releaseWebXRInteractionLock(220)
+  }, [releaseWebXRInteractionLock, removeObject, selectObject])
 
   const handlePhotoFile = useCallback((file) => {
     if (!file) return
@@ -1183,8 +1158,8 @@ export default function MobileARViewer() {
                 </div>
                 <span className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-white/70">
                   {webxrFeatureLevel === 'anchors'
-                    ? 'Anchors'
-                    : webxrFeatureLevel === 'dom-overlay'
+                      ? 'Anchors'
+                      : webxrFeatureLevel === 'dom-overlay'
                       ? 'Overlay'
                       : 'Hit Test'}
                 </span>
@@ -1220,7 +1195,7 @@ export default function MobileARViewer() {
           </div>
         )}
 
-        {mode === 'webxr' && selectedFurniture && (
+        {mode === 'webxr' && selectedFurniture && false && (
           <div className="absolute left-3 right-3 top-16 sm:left-4 sm:right-4 sm:top-20">
             <div className="mx-auto max-w-sm rounded-2xl bg-black/60 px-4 py-3 text-center backdrop-blur-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
