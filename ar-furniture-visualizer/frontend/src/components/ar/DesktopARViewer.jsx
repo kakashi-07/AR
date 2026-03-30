@@ -353,23 +353,17 @@ export default function DesktopARViewer() {
   const handleMouseDown = useCallback((e) => {
     if (e.button !== 0) return
     const hit = getFurnitureAtMouse(e)
-    if (hit) {
-      const id = hit.userData.sceneObjId
-      selectObject(id)
-      selectedIdRef.current = id
+    const activeId = hit?.userData.sceneObjId || selectedIdRef.current
+    const activeMesh = activeId ? meshMapRef.current[activeId] : null
+    const groundPt = raycastGround(e)
+
+    if (activeId && activeMesh && groundPt) {
+      selectObject(activeId)
+      selectedIdRef.current = activeId
       isDraggingRef.current = true
       canvasRef.current.classList.add('dragging')
-
-      const groundPt = raycastGround(e)
-      if (groundPt) {
-        dragOffsetRef.current
-          .copy(hit.position)
-          .sub(groundPt)
-        dragOffsetRef.current.y = 0
-      }
-    } else {
-      selectObject(null)
-      selectedIdRef.current = null
+      dragOffsetRef.current.copy(activeMesh.position).sub(groundPt)
+      dragOffsetRef.current.y = 0
     }
   }, [getFurnitureAtMouse, raycastGround, selectObject])
 
@@ -448,28 +442,17 @@ export default function DesktopARViewer() {
     if (e.touches.length === 1) {
       const t = e.touches[0]
       const hit = getFurnitureAtClient(t.clientX, t.clientY)
-      if (hit) {
-        const id = hit.userData.sceneObjId
-        selectObject(id)
-        selectedIdRef.current = id
+      const activeId = hit?.userData.sceneObjId || selectedIdRef.current
+      const activeMesh = activeId ? meshMapRef.current[activeId] : null
+      const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
+
+      if (activeId && activeMesh && groundPt) {
+        selectObject(activeId)
+        selectedIdRef.current = activeId
         isDraggingRef.current = true
         canvasRef.current?.classList.add('dragging')
-
-        const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
-        if (groundPt) {
-          dragOffsetRef.current.copy(hit.position).sub(groundPt)
-          dragOffsetRef.current.y = 0
-        }
-      } else if (selectedIdRef.current) {
-        const mesh = meshMapRef.current[selectedIdRef.current]
-        const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
-        if (mesh && groundPt) {
-          isDraggingRef.current = true
-          canvasRef.current?.classList.add('dragging')
-          dragOffsetRef.current.set(0, 0, 0)
-          mesh.position.x = groundPt.x
-          mesh.position.z = groundPt.z
-        }
+        dragOffsetRef.current.copy(activeMesh.position).sub(groundPt)
+        dragOffsetRef.current.y = 0
       }
       touchModeRef.current = 'drag'
     } else if (e.touches.length === 2) {
@@ -512,9 +495,10 @@ export default function DesktopARViewer() {
         const s = Math.max(0.1, Math.min(5, THREE.MathUtils.lerp(mesh.scale.x, mesh.scale.x * scale, 0.28)))
         mesh.scale.set(s, s, s)
         mesh.rotation.y += normalizeAngleDelta(angleDelta) * 0.65
+        persistTransform(selectedIdRef.current)
       }
     }
-  }, [raycastGroundAtClient])
+  }, [persistTransform, raycastGroundAtClient])
 
   const handleTouchEnd = useCallback(() => {
     handleMouseUp()
