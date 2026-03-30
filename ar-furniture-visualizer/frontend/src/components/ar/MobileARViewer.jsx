@@ -149,6 +149,14 @@ export default function MobileARViewer() {
     return objects.find((obj) => obj.id === id) || null
   }, [objects])
 
+  const getFurnitureRoot = useCallback((object) => {
+    let target = object
+    while (target?.parent && !target.userData?.isFurniture) {
+      target = target.parent
+    }
+    return target?.userData?.isFurniture ? target : null
+  }, [])
+
   const protectOverlayInteraction = useCallback((event) => {
     if (mode !== 'webxr') return
     event.preventDefault()
@@ -410,12 +418,33 @@ export default function MobileARViewer() {
 
     if (!hits.length) return null
 
-    let target = hits[0].object
-    while (target.parent && !target.userData.isFurniture) {
-      target = target.parent
-    }
-    return target.userData.isFurniture ? target : null
-  }, [setCanvasPointer])
+    return getFurnitureRoot(hits[0].object)
+  }, [getFurnitureRoot, setCanvasPointer])
+
+  const getWebXRObjectHit = useCallback((event, refSpace) => {
+    const frame = event?.frame
+    const inputSource = event?.inputSource
+    if (!frame || !inputSource || !refSpace) return null
+
+    const pose = frame.getPose(inputSource.targetRaySpace, refSpace)
+    if (!pose) return null
+
+    const rayMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix)
+    const origin = new THREE.Vector3()
+    const orientation = new THREE.Quaternion()
+    const scale = new THREE.Vector3()
+    const direction = new THREE.Vector3(0, 0, -1)
+
+    rayMatrix.decompose(origin, orientation, scale)
+    direction.applyQuaternion(orientation).normalize()
+
+    raycasterRef.current.set(origin, direction)
+    const meshes = Object.values(meshMapRef.current).filter((mesh) => mesh.visible)
+    const hits = raycasterRef.current.intersectObjects(meshes, true)
+
+    if (!hits.length) return null
+    return getFurnitureRoot(hits[0].object)
+  }, [getFurnitureRoot])
 
   const projectToPlacementPlane = useCallback((clientX, clientY, depth = 2.4) => {
     if (!setCanvasPointer(clientX, clientY) || !cameraRef.current) return null
@@ -840,8 +869,19 @@ export default function MobileARViewer() {
       const hitSource = await session.requestHitTestSource({ space: viewerSpace })
       hitSrcRef.current = hitSource
 
-      session.addEventListener('select', async () => {
+      session.addEventListener('select', async (event) => {
         if (performance.now() < webxrPlacementRef.current.ignoreSelectUntil) return
+
+        const tappedMesh = getWebXRObjectHit(event, refSpace)
+        if (tappedMesh?.userData?.sceneObjId) {
+          const tappedId = tappedMesh.userData.sceneObjId
+          const tappedObject = getSceneObjectById(tappedId)
+          selectObject(tappedId)
+          updatePlacementStatus(
+            `Selected ${tappedObject?.name || 'item'}. Use the controls below to resize or rotate it.`
+          )
+          return
+        }
 
         const selected = getSelectedMesh()
         const mesh = selected?.mesh
@@ -944,7 +984,7 @@ export default function MobileARViewer() {
       setErrorMsg(error?.message || 'Could not start surface AR.')
       updatePlacementStatus('Move your phone to find a flat surface.')
     }
-  }, [arSupported, cleanupRenderer, getSurfaceStatusMessage, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
+  }, [arSupported, cleanupRenderer, getSceneObjectById, getSelectedMesh, getSurfaceStatusMessage, getWebXRObjectHit, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
 
   const rotateSelected = useCallback((deg) => {
     const selected = getSelectedMesh()
