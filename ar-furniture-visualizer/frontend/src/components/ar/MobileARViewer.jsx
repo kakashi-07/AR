@@ -33,6 +33,48 @@ function normalizeAngleDelta(delta) {
   return next
 }
 
+function distanceToScreenRect(clientX, clientY, rect) {
+  const dx = clientX < rect.minX ? rect.minX - clientX : clientX > rect.maxX ? clientX - rect.maxX : 0
+  const dy = clientY < rect.minY ? rect.minY - clientY : clientY > rect.maxY ? clientY - rect.maxY : 0
+  return Math.hypot(dx, dy)
+}
+
+function getProjectedScreenRect(group, camera, viewportRect) {
+  const box = new THREE.Box3().setFromObject(group)
+  if (box.isEmpty()) return null
+
+  const corners = [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+  ]
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let visible = false
+
+  corners.forEach((corner) => {
+    corner.project(camera)
+    if (corner.z >= -1 && corner.z <= 1) visible = true
+    const screenX = viewportRect.left + ((corner.x + 1) * 0.5 * viewportRect.width)
+    const screenY = viewportRect.top + ((1 - corner.y) * 0.5 * viewportRect.height)
+    minX = Math.min(minX, screenX)
+    minY = Math.min(minY, screenY)
+    maxX = Math.max(maxX, screenX)
+    maxY = Math.max(maxY, screenY)
+  })
+
+  if (!visible) return null
+  return { minX, minY, maxX, maxY }
+}
+
 export default function MobileARViewer() {
   const [arSupported, setArSupported] = useState(null)
   const [mode, setMode] = useState('idle') // idle | starting-live | live | starting-webxr | webxr | error
@@ -435,9 +477,35 @@ export default function MobileARViewer() {
     const meshes = Object.values(meshMapRef.current).filter((mesh) => mesh.visible)
     const hits = raycasterRef.current.intersectObjects(meshes, true)
 
-    if (!hits.length) return null
+    if (hits.length) {
+      return getFurnitureRoot(hits[0].object)
+    }
 
-    return getFurnitureRoot(hits[0].object)
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+
+    let nearest = null
+    let bestDistance = 90
+
+    meshes.forEach((group) => {
+      const projectedRect = getProjectedScreenRect(group, cameraRef.current, rect)
+      if (!projectedRect) return
+
+      const expandedRect = {
+        minX: projectedRect.minX - 22,
+        minY: projectedRect.minY - 22,
+        maxX: projectedRect.maxX + 22,
+        maxY: projectedRect.maxY + 22,
+      }
+      const distance = distanceToScreenRect(clientX, clientY, expandedRect)
+
+      if (distance < bestDistance) {
+        bestDistance = distance
+        nearest = group
+      }
+    })
+
+    return nearest
   }, [getFurnitureRoot, setCanvasPointer])
 
   const projectToPlacementPlane = useCallback((clientX, clientY, depth = 2.4) => {

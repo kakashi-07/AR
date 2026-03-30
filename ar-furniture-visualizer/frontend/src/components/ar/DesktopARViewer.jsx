@@ -31,6 +31,48 @@ function drawExactImage(ctx, img, width, height) {
   ctx.drawImage(img, 0, 0, width, height)
 }
 
+function distanceToScreenRect(clientX, clientY, rect) {
+  const dx = clientX < rect.minX ? rect.minX - clientX : clientX > rect.maxX ? clientX - rect.maxX : 0
+  const dy = clientY < rect.minY ? rect.minY - clientY : clientY > rect.maxY ? clientY - rect.maxY : 0
+  return Math.hypot(dx, dy)
+}
+
+function getProjectedScreenRect(group, camera, viewportRect) {
+  const box = new THREE.Box3().setFromObject(group)
+  if (box.isEmpty()) return null
+
+  const corners = [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+  ]
+
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  let visible = false
+
+  corners.forEach((corner) => {
+    corner.project(camera)
+    if (corner.z >= -1 && corner.z <= 1) visible = true
+    const screenX = viewportRect.left + ((corner.x + 1) * 0.5 * viewportRect.width)
+    const screenY = viewportRect.top + ((1 - corner.y) * 0.5 * viewportRect.height)
+    minX = Math.min(minX, screenX)
+    minY = Math.min(minY, screenY)
+    maxX = Math.max(maxX, screenX)
+    maxY = Math.max(maxY, screenY)
+  })
+
+  if (!visible) return null
+  return { minX, minY, maxX, maxY }
+}
+
 export default function DesktopARViewer() {
   const [isCompactMobile, setIsCompactMobile] = useState(() => {
     if (typeof window === 'undefined') return false
@@ -340,13 +382,39 @@ export default function DesktopARViewer() {
     raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
     const meshes = Object.values(meshMapRef.current)
     const hits = raycasterRef.current.intersectObjects(meshes, true)
-    if (hits.length === 0) return null
-
-    let obj = hits[0].object
-    while (obj.parent && !obj.userData.isFurniture) {
-      obj = obj.parent
+    if (hits.length > 0) {
+      let obj = hits[0].object
+      while (obj.parent && !obj.userData.isFurniture) {
+        obj = obj.parent
+      }
+      if (obj.userData.isFurniture) return obj
     }
-    return obj.userData.isFurniture ? obj : null
+
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect || !cameraRef.current) return null
+
+    let nearest = null
+    let bestDistance = 80
+
+    meshes.forEach((group) => {
+      const projectedRect = getProjectedScreenRect(group, cameraRef.current, rect)
+      if (!projectedRect) return
+
+      const expandedRect = {
+        minX: projectedRect.minX - 18,
+        minY: projectedRect.minY - 18,
+        maxX: projectedRect.maxX + 18,
+        maxY: projectedRect.maxY + 18,
+      }
+      const distance = distanceToScreenRect(clientX, clientY, expandedRect)
+
+      if (distance < bestDistance) {
+        bestDistance = distance
+        nearest = group
+      }
+    })
+
+    return nearest
   }, [setPointerFromClient])
 
   // ── Mouse event handlers ────────────────────────────────────
