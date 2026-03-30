@@ -1,0 +1,230 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ───────────── CSS Variables ───────────── */
+:root {
+  --bg-primary:   #0B0B0F;
+  --bg-secondary: #141418;
+  --bg-card:      #1C1C24;
+  --bg-elevated:  #22222C;
+  --accent:       #D4A574;
+  --accent-light: #E8C49A;
+  --accent-dark:  #B8865A;
+  --text-primary: #F5F0E8;
+  --text-secondary: #9B9680;
+  --border:       #2A2A38;
+}
+
+/* ───────────── Global ───────────── */
+* { -webkit-tap-highlight-color: transparent; }
+::selection { background: var(--accent); color: var(--bg-primary); }
+
+/* ───────────── Furniture catalog grid background pattern ───────────── */
+.bg-furniture-pattern {
+  background-image:
+    radial-gradient(circle at 20% 35%, rgba(212,165,116,0.08) 0%, transparent 50%),
+    radial-gradient(circle at 80% 10%, rgba(212,165,116,0.06) 0%, transparent 40%),
+    radial-gradient(circle at 50% 80%, rgba(212,165,116,0.05) 0%, transparent 50%),
+    url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23D4A574' fill-opacity='0.03'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  background-color: var(--bg-primary);
+}
+
+/* ───────────── Glass card ───────────── */
+.glass-card {
+  background: rgba(28, 28, 36, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(212, 165, 116, 0.12);
+  border-radius: 16px;
+}
+
+/* ───────────── AR Canvas ───────────── */
+#ar-canvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#ar-canvas.dragging {
+  cursor: grabbing;
+}
+
+/* ───────────── Model Viewer ───────────── */
+model-viewer {
+  width: 100%;
+  height: 100%;
+  background-color: transparent;
+}
+
+/* ───────────── Input fields ───────────── */
+.input-field {
+  @apply w-full bg-bg-elevated border border-border rounded-xl px-4 py-3 
+         text-text-primary placeholder-text-muted focus:outline-none 
+         focus:border-accent/60 focus:ring-1 focus:ring-accent/30 
+         transition-all duration-200 font-body;
+}
+
+/* ───────────── Buttons ───────────── */
+.btn-primary {
+  @apply bg-accent hover:bg-accent-light text-bg-primary font-semibold 
+         rounded-xl px-6 py-3 transition-all duration-200 
+         hover:shadow-glow active:scale-95 disabled:opacity-50 
+         disabled:cursor-not-allowed font-body;
+}
+
+.btn-secondary {
+  @apply bg-bg-elevated hover:bg-bg-card border border-border 
+         hover:border-accent/40 text-text-primary font-semibold 
+         rounded-xl px-6 py-3 transition-all duration-200 
+         active:scale-95 font-body;
+}
+
+.btn-ghost {
+  @apply hover:bg-bg-elevated text-text-secondary hover:text-text-primary 
+         rounded-xl px-4 py-2 transition-all duration-200 font-body;
+}
+
+.btn-danger {
+  @apply bg-error/10 hover:bg-error/20 text-error border border-error/20 
+         hover:border-error/40 rounded-xl px-4 py-2 transition-all duration-200 font-body;
+}
+
+/* ───────────── Scrollbar within containers ───────────── */
+.custom-scroll::-webkit-scrollbar { width: 4px; }
+.custom-scroll::-webkit-scrollbar-track { background: transparent; }
+.custom-scroll::-webkit-scrollbar-thumb { background: #2A2A38; border-radius: 2px; }
+
+/* ───────────── Catalog item ───────────── */
+.furniture-card {
+  @apply bg-bg-card border border-border rounded-2xl overflow-hidden
+         cursor-pointer transition-all duration-300 
+         hover:border-accent/40 hover:shadow-card hover:-translate-y-0.5;
+}
+
+.furniture-card.selected {
+  @apply border-accent shadow-glow;
+}
+
+/* ───────────── Color swatch ───────────── */
+.color-swatch {
+  @apply w-8 h-8 rounded-full cursor-pointer border-2 border-transparent 
+         transition-all duration-200 hover:scale-110;
+}
+.color-swatch.active {
+  @apply border-white scale-110 ring-2 ring-accent ring-offset-1 ring-offset-bg-primary;
+}
+
+/* ───────────── Sidebar ───────────── */
+.sidebar-nav-item {
+  @apply flex items-center gap-3 px-4 py-3 rounded-xl text-text-secondary
+         hover:text-text-primary hover:bg-bg-elevated transition-all duration-200
+         cursor-pointer font-body;
+}
+
+.sidebar-nav-item.active {
+  @apply text-accent bg-accent/10 border border-accent/20;
+}
+
+/* ───────────── Range slider ───────────── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+}
+input[type="range"]::-webkit-slider-track {
+  background: var(--border);
+  height: 4px;
+  border-radius: 2px;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  margin-top: -6px;
+  transition: transform 0.2s;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* ───────────── Scene object item ───────────── */
+.scene-item {
+  @apply flex items-center gap-2 px-3 py-2.5 rounded-xl bg-bg-elevated 
+         border border-border hover:border-accent/30 cursor-pointer 
+         transition-all duration-200;
+}
+.scene-item.selected {
+  @apply border-accent/60 bg-accent/5;
+}
+
+/* ───────────── Reticle (WebXR) ───────────── */
+.xr-reticle {
+  display: none;
+}
+
+/* ───────────── Loading skeleton ───────────── */
+.skeleton {
+  @apply bg-bg-elevated animate-pulse rounded-lg;
+}
+
+/* ───────────── Tooltip ───────────── */
+.tooltip {
+  @apply absolute z-50 bg-bg-elevated border border-border text-text-secondary 
+         text-xs rounded-lg px-3 py-1.5 pointer-events-none whitespace-nowrap
+         shadow-card;
+}
+
+/* ───────────── Badge ───────────── */
+.badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+}
+.badge-accent { @apply bg-accent/15 text-accent; }
+.badge-success { @apply bg-success/15 text-success; }
+.badge-error { @apply bg-error/15 text-error; }
+
+/* ───────────── Notification dot ───────────── */
+.notification-dot {
+  @apply absolute -top-1 -right-1 w-2.5 h-2.5 bg-accent rounded-full;
+}
+
+/* ───────────── Page transition ───────────── */
+.page-enter {
+  animation: fadeIn 0.4s ease forwards;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-10px); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 5px rgba(212,165,116,0.2); }
+  50%       { box-shadow: 0 0 25px rgba(212,165,116,0.5); }
+}
+
+/* ───────────── AR overlay controls ───────────── */
+.ar-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+}
+.ar-overlay > * { pointer-events: all; }
+
+/* ───────────── Desktop drag cursor ───────────── */
+.cursor-grab { cursor: grab; }
+.cursor-grab:active, .cursor-grabbing { cursor: grabbing; }
