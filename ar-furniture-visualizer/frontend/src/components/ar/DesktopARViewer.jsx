@@ -296,11 +296,15 @@ export default function DesktopARViewer() {
   }, [objects.map(o => `${o.id}:${o.colorHex}`).join(',')]) // eslint-disable-line
 
   // ── Mouse helpers ───────────────────────────────────────────
-  const getNDC = useCallback((e) => {
+  const setPointerFromClient = useCallback((clientX, clientY) => {
     const rect = canvasRef.current.getBoundingClientRect()
-    mouseRef.current.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1
-    mouseRef.current.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1
+    mouseRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1
+    mouseRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1
   }, [])
+
+  const getNDC = useCallback((e) => {
+    setPointerFromClient(e.clientX, e.clientY)
+  }, [setPointerFromClient])
 
   const raycastGround = useCallback((e) => {
     getNDC(e)
@@ -308,6 +312,13 @@ export default function DesktopARViewer() {
     const hits = raycasterRef.current.intersectObject(groundRef.current)
     return hits.length > 0 ? hits[0].point : null
   }, [getNDC])
+
+  const raycastGroundAtClient = useCallback((clientX, clientY) => {
+    setPointerFromClient(clientX, clientY)
+    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
+    const hits = raycasterRef.current.intersectObject(groundRef.current)
+    return hits.length > 0 ? hits[0].point : null
+  }, [setPointerFromClient])
 
   const getFurnitureAtMouse = useCallback((e) => {
     getNDC(e)
@@ -323,6 +334,20 @@ export default function DesktopARViewer() {
     }
     return obj.userData.isFurniture ? obj : null
   }, [getNDC])
+
+  const getFurnitureAtClient = useCallback((clientX, clientY) => {
+    setPointerFromClient(clientX, clientY)
+    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
+    const meshes = Object.values(meshMapRef.current)
+    const hits = raycasterRef.current.intersectObjects(meshes, true)
+    if (hits.length === 0) return null
+
+    let obj = hits[0].object
+    while (obj.parent && !obj.userData.isFurniture) {
+      obj = obj.parent
+    }
+    return obj.userData.isFurniture ? obj : null
+  }, [setPointerFromClient])
 
   // ── Mouse event handlers ────────────────────────────────────
   const handleMouseDown = useCallback((e) => {
@@ -422,8 +447,30 @@ export default function DesktopARViewer() {
     e.preventDefault()
     if (e.touches.length === 1) {
       const t = e.touches[0]
-      const synth = { clientX: t.clientX, clientY: t.clientY, button: 0 }
-      handleMouseDown(synth)
+      const hit = getFurnitureAtClient(t.clientX, t.clientY)
+      if (hit) {
+        const id = hit.userData.sceneObjId
+        selectObject(id)
+        selectedIdRef.current = id
+        isDraggingRef.current = true
+        canvasRef.current?.classList.add('dragging')
+
+        const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
+        if (groundPt) {
+          dragOffsetRef.current.copy(hit.position).sub(groundPt)
+          dragOffsetRef.current.y = 0
+        }
+      } else if (selectedIdRef.current) {
+        const mesh = meshMapRef.current[selectedIdRef.current]
+        const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
+        if (mesh && groundPt) {
+          isDraggingRef.current = true
+          canvasRef.current?.classList.add('dragging')
+          dragOffsetRef.current.set(0, 0, 0)
+          mesh.position.x = groundPt.x
+          mesh.position.z = groundPt.z
+        }
+      }
       touchModeRef.current = 'drag'
     } else if (e.touches.length === 2) {
       touchModeRef.current = 'pinch'
@@ -431,16 +478,25 @@ export default function DesktopARViewer() {
       const dy = e.touches[0].clientY - e.touches[1].clientY
       lastPinchRef.current = Math.hypot(dx, dy)
       lastTouchAngleRef.current = Math.atan2(dy, dx)
+      handleMouseUp()
       isDraggingRef.current = false
       canvasRef.current?.classList.remove('dragging')
     }
-  }, [handleMouseDown])
+  }, [getFurnitureAtClient, handleMouseUp, raycastGroundAtClient, selectObject])
 
   const handleTouchMove = useCallback((e) => {
     e.preventDefault()
     if (touchModeRef.current === 'drag' && e.touches.length === 1) {
       const t = e.touches[0]
-      handleMouseMove({ clientX: t.clientX, clientY: t.clientY })
+      if (!isDraggingRef.current || !selectedIdRef.current) return
+      const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
+      if (!groundPt) return
+      const mesh = meshMapRef.current[selectedIdRef.current]
+      if (!mesh) return
+      const targetX = groundPt.x + dragOffsetRef.current.x
+      const targetZ = groundPt.z + dragOffsetRef.current.z
+      mesh.position.x = THREE.MathUtils.lerp(mesh.position.x, targetX, 0.45)
+      mesh.position.z = THREE.MathUtils.lerp(mesh.position.z, targetZ, 0.45)
     } else if (touchModeRef.current === 'pinch' && e.touches.length === 2) {
       if (!selectedIdRef.current) return
       const dx = e.touches[0].clientX - e.touches[1].clientX
@@ -458,7 +514,7 @@ export default function DesktopARViewer() {
         mesh.rotation.y += normalizeAngleDelta(angleDelta) * 0.65
       }
     }
-  }, [handleMouseMove])
+  }, [raycastGroundAtClient])
 
   const handleTouchEnd = useCallback(() => {
     handleMouseUp()
