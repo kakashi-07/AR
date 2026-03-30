@@ -26,6 +26,13 @@ function createReticle() {
   return mesh
 }
 
+function normalizeAngleDelta(delta) {
+  let next = delta
+  while (next > Math.PI) next -= Math.PI * 2
+  while (next < -Math.PI) next += Math.PI * 2
+  return next
+}
+
 export default function MobileARViewer() {
   const [arSupported, setArSupported] = useState(null)
   const [mode, setMode] = useState('idle') // idle | starting-live | live | starting-webxr | webxr | error
@@ -474,11 +481,13 @@ export default function MobileARViewer() {
     const point = projectToPlacementPlane(clientX, clientY, Math.abs(mesh.position.z) || 2.4)
     if (!point) return
 
-    mesh.position.set(
+    const target = new THREE.Vector3(
       point.x + offset.x,
       point.y + offset.y,
       point.z + offset.z
     )
+
+    mesh.position.lerp(target, 0.35)
   }, [projectToPlacementPlane])
 
   const placeMeshInFrontOfCamera = useCallback((mesh, slotIndex = 0) => {
@@ -559,7 +568,7 @@ export default function MobileARViewer() {
 
   const handlePointerDown = useCallback((event) => {
     if (mode !== 'live') return
-    if (event.pointerType === 'touch' && liveInteractionRef.current.pinchInProgress) return
+    if (event.pointerType === 'touch') return
     if (event.isPrimary === false) return
 
     const clientX = event.clientX
@@ -598,7 +607,7 @@ export default function MobileARViewer() {
 
   const handlePointerMove = useCallback((event) => {
     if (mode !== 'live') return
-    if (event.pointerType === 'touch' && liveInteractionRef.current.pinchInProgress) return
+    if (event.pointerType === 'touch') return
     const dragState = dragStateRef.current
 
     if (!dragState.active || dragState.pointerId !== event.pointerId || !dragState.objectId) {
@@ -614,8 +623,15 @@ export default function MobileARViewer() {
   }, [mode, moveSelectedToPoint])
 
   const handlePointerEnd = useCallback((event) => {
+    if (event.pointerType === 'touch') return
     const dragState = dragStateRef.current
     if (dragState.pointerId === event.pointerId) {
+      if (dragState.objectId) {
+        const mesh = meshMapRef.current[dragState.objectId]
+        if (mesh) {
+          persistMeshTransform(dragState.objectId, mesh)
+        }
+      }
       dragStateRef.current = {
         active: false,
         pointerId: null,
@@ -627,7 +643,7 @@ export default function MobileARViewer() {
         canvasRef.current.releasePointerCapture(event.pointerId)
       }
     }
-  }, [])
+  }, [persistMeshTransform])
 
   const handleTouchStart = useCallback((event) => {
     if (mode !== 'live') return
@@ -639,6 +655,39 @@ export default function MobileARViewer() {
         y: touch.clientY,
       })
     })
+
+    if (event.touches.length === 1 && !pinchState.active) {
+      const touch = event.touches[0]
+      const hit = getMeshAtPoint(touch.clientX, touch.clientY)
+
+      if (hit) {
+        const id = hit.userData.sceneObjId
+        const mesh = meshMapRef.current[id]
+        const point = projectToPlacementPlane(touch.clientX, touch.clientY, Math.abs(mesh?.position.z) || 2.4)
+
+        selectObject(id)
+
+        if (mesh && point) {
+          dragStateRef.current = {
+            active: true,
+            pointerId: 'touch',
+            objectId: id,
+            offset: mesh.position.clone().sub(point),
+            mode: 'drag',
+          }
+        }
+      } else {
+        dragStateRef.current = {
+          active: false,
+          pointerId: null,
+          objectId: null,
+          offset: new THREE.Vector3(),
+          mode: 'place',
+        }
+        placeSelectedAt(touch.clientX, touch.clientY)
+      }
+      return
+    }
 
     if (event.touches.length === 2 && selectedIdRef.current) {
       const [a, b] = Array.from(event.touches)
@@ -674,7 +723,7 @@ export default function MobileARViewer() {
         mode: 'idle',
       }
     }
-  }, [mode])
+  }, [getMeshAtPoint, mode, placeSelectedAt, projectToPlacementPlane, selectObject])
 
   const handleTouchMove = useCallback((event) => {
     if (mode !== 'live') return
@@ -689,14 +738,25 @@ export default function MobileARViewer() {
       }
     })
 
+    if (event.touches.length === 1) {
+      const dragState = dragStateRef.current
+      if (dragState.active && dragState.objectId) {
+        event.preventDefault()
+        const touch = event.touches[0]
+        moveSelectedToPoint(
+          dragState.objectId,
+          touch.clientX,
+          touch.clientY,
+          dragState.offset
+        )
+      }
+      return
+    }
+
     if (event.touches.length === 2 && pinchState.active && pinchState.objectId) {
       event.preventDefault()
       const [a, b] = Array.from(event.touches)
       const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
-      const center = {
-        x: (a.clientX + b.clientX) / 2,
-        y: (a.clientY + b.clientY) / 2,
-      }
       const angle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX)
       const mesh = meshMapRef.current[pinchState.objectId]
       if (!mesh || !pinchState.distance) return
@@ -705,34 +765,37 @@ export default function MobileARViewer() {
         0.15,
         Math.min(4, pinchState.startScale * (distance / pinchState.distance))
       )
-      mesh.scale.setScalar(nextScale)
+      const smoothedScale = THREE.MathUtils.lerp(mesh.scale.x, nextScale, 0.28)
+      mesh.scale.setScalar(smoothedScale)
 
-      if (pinchState.lastCenter) {
-        const deltaX = center.x - pinchState.lastCenter.x
-        const deltaY = center.y - pinchState.lastCenter.y
-
-        mesh.rotation.y += deltaX * 0.01
-        mesh.rotation.x = Math.max(
-          -Math.PI / 2,
-          Math.min(Math.PI / 2, mesh.rotation.x + deltaY * 0.01)
-        )
-      }
-
-      const angleDelta = angle - pinchState.lastAngle
-      mesh.rotation.z += angleDelta
-
-      pinchState.lastCenter = center
+      const angleDelta = normalizeAngleDelta(angle - pinchState.lastAngle)
+      mesh.rotation.y += angleDelta * 0.65
       pinchState.lastAngle = angle
     }
-  }, [mode])
+  }, [mode, moveSelectedToPoint])
 
   const handleTouchEnd = useCallback((event) => {
     const pinchState = pinchStateRef.current
+    const dragState = dragStateRef.current
     Array.from(event.changedTouches).forEach((touch) => {
       pinchState.touches.delete(touch.identifier)
     })
 
+    if (dragState.active && dragState.objectId) {
+      const mesh = meshMapRef.current[dragState.objectId]
+      if (mesh) {
+        persistMeshTransform(dragState.objectId, mesh)
+      }
+    }
+
     if (event.touches.length < 2) {
+      if (pinchState.objectId) {
+        const mesh = meshMapRef.current[pinchState.objectId]
+        if (mesh) {
+          persistMeshTransform(pinchState.objectId, mesh)
+        }
+      }
+
       pinchState.active = false
       pinchState.distance = 0
       pinchState.lastCenter = null
@@ -740,7 +803,17 @@ export default function MobileARViewer() {
       pinchState.objectId = null
       liveInteractionRef.current.pinchInProgress = false
     }
-  }, [])
+
+    if (event.touches.length === 0) {
+      dragStateRef.current = {
+        active: false,
+        pointerId: null,
+        objectId: null,
+        offset: new THREE.Vector3(),
+        mode: 'idle',
+      }
+    }
+  }, [persistMeshTransform])
 
   const startLiveCamera = useCallback(async () => {
     setErrorMsg('')

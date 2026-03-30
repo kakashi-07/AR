@@ -10,6 +10,13 @@ import * as THREE from 'three'
 import { useScene } from '../../contexts/SceneContext'
 import { buildFurniture, applyColor, setHighlight } from '../../utils/furnitureBuilder'
 
+function normalizeAngleDelta(delta) {
+  let next = delta
+  while (next > Math.PI) next -= Math.PI * 2
+  while (next < -Math.PI) next += Math.PI * 2
+  return next
+}
+
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -347,11 +354,10 @@ export default function DesktopARViewer() {
     if (!groundPt) return
     const mesh = meshMapRef.current[selectedIdRef.current]
     if (!mesh) return
-    mesh.position.set(
-      groundPt.x + dragOffsetRef.current.x,
-      mesh.position.y,
-      groundPt.z + dragOffsetRef.current.z
-    )
+    const targetX = groundPt.x + dragOffsetRef.current.x
+    const targetZ = groundPt.z + dragOffsetRef.current.z
+    mesh.position.x = THREE.MathUtils.lerp(mesh.position.x, targetX, 0.4)
+    mesh.position.z = THREE.MathUtils.lerp(mesh.position.z, targetZ, 0.4)
   }, [raycastGround])
 
   const handleMouseUp = useCallback(() => {
@@ -408,22 +414,25 @@ export default function DesktopARViewer() {
   }, [removeObject])
 
   // ── Touch support ────────────────────────────────────────────
-  const lastTouchRef = useRef({ x: 0, y: 0 })
   const touchModeRef = useRef('none') // 'drag' | 'pinch'
   const lastPinchRef = useRef(0)
+  const lastTouchAngleRef = useRef(0)
 
   const handleTouchStart = useCallback((e) => {
+    e.preventDefault()
     if (e.touches.length === 1) {
       const t = e.touches[0]
       const synth = { clientX: t.clientX, clientY: t.clientY, button: 0 }
       handleMouseDown(synth)
-      lastTouchRef.current = { x: t.clientX, y: t.clientY }
       touchModeRef.current = 'drag'
     } else if (e.touches.length === 2) {
       touchModeRef.current = 'pinch'
       const dx = e.touches[0].clientX - e.touches[1].clientX
       const dy = e.touches[0].clientY - e.touches[1].clientY
       lastPinchRef.current = Math.hypot(dx, dy)
+      lastTouchAngleRef.current = Math.atan2(dy, dx)
+      isDraggingRef.current = false
+      canvasRef.current?.classList.remove('dragging')
     }
   }, [handleMouseDown])
 
@@ -438,11 +447,15 @@ export default function DesktopARViewer() {
       const dy = e.touches[0].clientY - e.touches[1].clientY
       const dist = Math.hypot(dx, dy)
       const scale = dist / lastPinchRef.current
+      const angle = Math.atan2(dy, dx)
+      const angleDelta = angle - lastTouchAngleRef.current
       lastPinchRef.current = dist
+      lastTouchAngleRef.current = angle
       const mesh = meshMapRef.current[selectedIdRef.current]
       if (mesh) {
-        const s = Math.max(0.1, Math.min(5, mesh.scale.x * scale))
+        const s = Math.max(0.1, Math.min(5, THREE.MathUtils.lerp(mesh.scale.x, mesh.scale.x * scale, 0.28)))
         mesh.scale.set(s, s, s)
+        mesh.rotation.y += normalizeAngleDelta(angleDelta) * 0.65
       }
     }
   }, [handleMouseMove])
