@@ -11,7 +11,6 @@ function FurnitureThumbnail({ item }) {
     storage: 'from-slate-800/40 to-slate-700/20',
     bedroom: 'from-indigo-900/40 to-indigo-800/20',
     work:    'from-emerald-900/40 to-emerald-800/20',
-    decor:   'from-yellow-900/35 to-zinc-800/20',
   }
   const bg = bgColors[item.category] || 'from-gray-800/40 to-gray-700/20'
 

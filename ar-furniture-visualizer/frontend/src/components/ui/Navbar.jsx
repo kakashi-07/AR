@@ -21,7 +21,6 @@ export default function Navbar() {
     const reader = new FileReader()
     reader.onload = (ev) => setRoomImage(ev.target.result)
     reader.readAsDataURL(file)
-    e.target.value = ''
     setARMode(false)
   }
 

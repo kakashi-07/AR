@@ -5,17 +5,10 @@
  * - Interactive 3D furniture placement
  * - Drag to move, scroll to scale, R to rotate, Delete to remove
  */
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { useScene } from '../../contexts/SceneContext'
 import { buildFurniture, applyColor, setHighlight } from '../../utils/furnitureBuilder'
-
-function normalizeAngleDelta(delta) {
-  let next = delta
-  while (next > Math.PI) next -= Math.PI * 2
-  while (next < -Math.PI) next += Math.PI * 2
-  return next
-}
 
 function loadImage(src) {
   return new Promise((resolve, reject) => {
@@ -27,71 +20,27 @@ function loadImage(src) {
   })
 }
 
-function drawExactImage(ctx, img, width, height) {
-  ctx.drawImage(img, 0, 0, width, height)
-}
+function drawCoverImage(ctx, img, width, height) {
+  const imageAspect = img.width / img.height
+  const canvasAspect = width / height
 
-function distanceToScreenRect(clientX, clientY, rect) {
-  const dx = clientX < rect.minX ? rect.minX - clientX : clientX > rect.maxX ? clientX - rect.maxX : 0
-  const dy = clientY < rect.minY ? rect.minY - clientY : clientY > rect.maxY ? clientY - rect.maxY : 0
-  return Math.hypot(dx, dy)
-}
+  let sx = 0
+  let sy = 0
+  let sw = img.width
+  let sh = img.height
 
-function getProjectedScreenRect(group, camera, viewportRect) {
-  const box = new THREE.Box3().setFromObject(group)
-  if (box.isEmpty()) return null
-
-  const corners = [
-    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
-  ]
-
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  let visible = false
-  let depthSum = 0
-  let depthCount = 0
-
-  corners.forEach((corner) => {
-    corner.project(camera)
-    if (corner.z >= -1 && corner.z <= 1) visible = true
-    if (corner.z >= -1 && corner.z <= 1) {
-      depthSum += corner.z
-      depthCount += 1
-    }
-    const screenX = viewportRect.left + ((corner.x + 1) * 0.5 * viewportRect.width)
-    const screenY = viewportRect.top + ((1 - corner.y) * 0.5 * viewportRect.height)
-    minX = Math.min(minX, screenX)
-    minY = Math.min(minY, screenY)
-    maxX = Math.max(maxX, screenX)
-    maxY = Math.max(maxY, screenY)
-  })
-
-  if (!visible) return null
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    area: Math.max(1, (maxX - minX) * (maxY - minY)),
-    depth: depthCount ? depthSum / depthCount : Infinity,
+  if (imageAspect > canvasAspect) {
+    sw = img.height * canvasAspect
+    sx = (img.width - sw) / 2
+  } else {
+    sh = img.width / canvasAspect
+    sy = (img.height - sh) / 2
   }
+
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, width, height)
 }
 
 export default function DesktopARViewer() {
-  const [isCompactMobile, setIsCompactMobile] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.innerWidth < 768
-  })
-  const viewportRef = useRef(null)
   const containerRef = useRef(null)
   const canvasRef    = useRef(null)
   const rendererRef  = useRef(null)
@@ -105,8 +54,6 @@ export default function DesktopARViewer() {
   const raycasterRef  = useRef(new THREE.Raycaster())
   const mouseRef      = useRef(new THREE.Vector2())
   const rafRef        = useRef(null)
-  const [roomImageSize, setRoomImageSize] = useState(null)
-  const [stageSize, setStageSize] = useState(null)
   const {
     objects, selectedId, roomImage,
     selectObject, removeObject, updateTransform,
@@ -132,72 +79,8 @@ export default function DesktopARViewer() {
     })
   }, [updateTransform])
 
-  useEffect(() => {
-    let cancelled = false
-
-    if (!roomImage) {
-      setRoomImageSize(null)
-      return
-    }
-
-    loadImage(roomImage)
-      .then((img) => {
-        if (!cancelled) {
-          setRoomImageSize({ width: img.width, height: img.height })
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setRoomImageSize(null)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [roomImage])
-
-  useEffect(() => {
-    const updateStageSize = () => {
-      const viewport = viewportRef.current
-      if (!viewport) return
-
-      const viewportWidth = viewport.clientWidth
-      const viewportHeight = viewport.clientHeight
-
-      if (!viewportWidth || !viewportHeight) return
-
-      if (!roomImageSize?.width || !roomImageSize?.height) {
-        setStageSize({ width: viewportWidth, height: viewportHeight })
-        return
-      }
-
-      const imageAspect = roomImageSize.width / roomImageSize.height
-      let nextWidth = viewportWidth
-      let nextHeight = nextWidth / imageAspect
-
-      if (nextHeight > viewportHeight) {
-        nextHeight = viewportHeight
-        nextWidth = nextHeight * imageAspect
-      }
-
-      setStageSize({
-        width: Math.max(1, Math.round(nextWidth)),
-        height: Math.max(1, Math.round(nextHeight)),
-      })
-    }
-
-    updateStageSize()
-    window.addEventListener('resize', updateStageSize)
-    return () => window.removeEventListener('resize', updateStageSize)
-  }, [roomImageSize])
-
   // ── Initialize Three.js scene ──────────────────────────────
   useEffect(() => {
-    const updateViewportMode = () => {
-      setIsCompactMobile(window.innerWidth < 768)
-    }
-
     const container = containerRef.current
     if (!container) return
 
@@ -275,26 +158,18 @@ export default function DesktopARViewer() {
 
     // Resize handler
     const onResize = () => {
-      updateViewportMode()
       const cw = container.clientWidth
       const ch = container.clientHeight
-      if (!cw || !ch) return
       camera.aspect = cw / ch
       camera.updateProjectionMatrix()
       renderer.setSize(cw, ch)
     }
-
-    const resizeObserver = new ResizeObserver(onResize)
-    resizeObserver.observe(container)
-    updateViewportMode()
-    onResize()
-    window.addEventListener('resize', updateViewportMode)
+    window.addEventListener('resize', onResize)
 
     return () => {
       cancelAnimationFrame(rafRef.current)
       renderer.dispose()
-      resizeObserver.disconnect()
-      window.removeEventListener('resize', updateViewportMode)
+      window.removeEventListener('resize', onResize)
     }
   }, [])
 
@@ -351,15 +226,11 @@ export default function DesktopARViewer() {
   }, [objects.map(o => `${o.id}:${o.colorHex}`).join(',')]) // eslint-disable-line
 
   // ── Mouse helpers ───────────────────────────────────────────
-  const setPointerFromClient = useCallback((clientX, clientY) => {
-    const rect = canvasRef.current.getBoundingClientRect()
-    mouseRef.current.x = ((clientX - rect.left) / rect.width) * 2 - 1
-    mouseRef.current.y = -((clientY - rect.top) / rect.height) * 2 + 1
-  }, [])
-
   const getNDC = useCallback((e) => {
-    setPointerFromClient(e.clientX, e.clientY)
-  }, [setPointerFromClient])
+    const rect = canvasRef.current.getBoundingClientRect()
+    mouseRef.current.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1
+    mouseRef.current.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1
+  }, [])
 
   const raycastGround = useCallback((e) => {
     getNDC(e)
@@ -367,13 +238,6 @@ export default function DesktopARViewer() {
     const hits = raycasterRef.current.intersectObject(groundRef.current)
     return hits.length > 0 ? hits[0].point : null
   }, [getNDC])
-
-  const raycastGroundAtClient = useCallback((clientX, clientY) => {
-    setPointerFromClient(clientX, clientY)
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
-    const hits = raycasterRef.current.intersectObject(groundRef.current)
-    return hits.length > 0 ? hits[0].point : null
-  }, [setPointerFromClient])
 
   const getFurnitureAtMouse = useCallback((e) => {
     getNDC(e)
@@ -390,88 +254,27 @@ export default function DesktopARViewer() {
     return obj.userData.isFurniture ? obj : null
   }, [getNDC])
 
-  const getFurnitureAtClient = useCallback((clientX, clientY) => {
-    setPointerFromClient(clientX, clientY)
-    raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current)
-    const meshes = Object.values(meshMapRef.current)
-    const hits = raycasterRef.current.intersectObjects(meshes, true)
-    if (hits.length > 0) {
-      let obj = hits[0].object
-      while (obj.parent && !obj.userData.isFurniture) {
-        obj = obj.parent
-      }
-      if (obj.userData.isFurniture) return obj
-    }
-
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect || !cameraRef.current) return null
-
-    const insideCandidates = []
-    let nearest = null
-    let bestDistance = 80
-
-    meshes.forEach((group) => {
-      const projectedRect = getProjectedScreenRect(group, cameraRef.current, rect)
-      if (!projectedRect) return
-
-      const tightRect = {
-        minX: projectedRect.minX,
-        minY: projectedRect.minY,
-        maxX: projectedRect.maxX,
-        maxY: projectedRect.maxY,
-      }
-      const expandedRect = {
-        minX: projectedRect.minX - 18,
-        minY: projectedRect.minY - 18,
-        maxX: projectedRect.maxX + 18,
-        maxY: projectedRect.maxY + 18,
-      }
-      const insideTight =
-        clientX >= tightRect.minX &&
-        clientX <= tightRect.maxX &&
-        clientY >= tightRect.minY &&
-        clientY <= tightRect.maxY
-
-      if (insideTight) {
-        insideCandidates.push({ group, projectedRect })
-      }
-
-      const distance = distanceToScreenRect(clientX, clientY, expandedRect)
-
-      if (distance < bestDistance) {
-        bestDistance = distance
-        nearest = group
-      }
-    })
-
-    if (insideCandidates.length > 0) {
-      insideCandidates.sort((a, b) => {
-        if (Math.abs(a.projectedRect.area - b.projectedRect.area) > 1) {
-          return a.projectedRect.area - b.projectedRect.area
-        }
-        return a.projectedRect.depth - b.projectedRect.depth
-      })
-      return insideCandidates[0].group
-    }
-
-    return nearest
-  }, [setPointerFromClient])
-
   // ── Mouse event handlers ────────────────────────────────────
   const handleMouseDown = useCallback((e) => {
     if (e.button !== 0) return
     const hit = getFurnitureAtMouse(e)
-    const activeId = hit?.userData.sceneObjId || selectedIdRef.current
-    const activeMesh = activeId ? meshMapRef.current[activeId] : null
-    const groundPt = raycastGround(e)
-
-    if (activeId && activeMesh && groundPt) {
-      selectObject(activeId)
-      selectedIdRef.current = activeId
+    if (hit) {
+      const id = hit.userData.sceneObjId
+      selectObject(id)
+      selectedIdRef.current = id
       isDraggingRef.current = true
       canvasRef.current.classList.add('dragging')
-      dragOffsetRef.current.copy(activeMesh.position).sub(groundPt)
-      dragOffsetRef.current.y = 0
+
+      const groundPt = raycastGround(e)
+      if (groundPt) {
+        dragOffsetRef.current
+          .copy(hit.position)
+          .sub(groundPt)
+        dragOffsetRef.current.y = 0
+      }
+    } else {
+      selectObject(null)
+      selectedIdRef.current = null
     }
   }, [getFurnitureAtMouse, raycastGround, selectObject])
 
@@ -481,10 +284,11 @@ export default function DesktopARViewer() {
     if (!groundPt) return
     const mesh = meshMapRef.current[selectedIdRef.current]
     if (!mesh) return
-    const targetX = groundPt.x + dragOffsetRef.current.x
-    const targetZ = groundPt.z + dragOffsetRef.current.z
-    mesh.position.x = THREE.MathUtils.lerp(mesh.position.x, targetX, 0.4)
-    mesh.position.z = THREE.MathUtils.lerp(mesh.position.z, targetZ, 0.4)
+    mesh.position.set(
+      groundPt.x + dragOffsetRef.current.x,
+      mesh.position.y,
+      groundPt.z + dragOffsetRef.current.z
+    )
   }, [raycastGround])
 
   const handleMouseUp = useCallback(() => {
@@ -541,72 +345,44 @@ export default function DesktopARViewer() {
   }, [removeObject])
 
   // ── Touch support ────────────────────────────────────────────
+  const lastTouchRef = useRef({ x: 0, y: 0 })
   const touchModeRef = useRef('none') // 'drag' | 'pinch'
   const lastPinchRef = useRef(0)
-  const lastTouchAngleRef = useRef(0)
 
   const handleTouchStart = useCallback((e) => {
-    e.preventDefault()
     if (e.touches.length === 1) {
       const t = e.touches[0]
-      const hit = getFurnitureAtClient(t.clientX, t.clientY)
-      const activeId = hit?.userData.sceneObjId || selectedIdRef.current
-      const activeMesh = activeId ? meshMapRef.current[activeId] : null
-      const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
-
-      if (activeId && activeMesh && groundPt) {
-        selectObject(activeId)
-        selectedIdRef.current = activeId
-        isDraggingRef.current = true
-        canvasRef.current?.classList.add('dragging')
-        dragOffsetRef.current.copy(activeMesh.position).sub(groundPt)
-        dragOffsetRef.current.y = 0
-      }
+      const synth = { clientX: t.clientX, clientY: t.clientY, button: 0 }
+      handleMouseDown(synth)
+      lastTouchRef.current = { x: t.clientX, y: t.clientY }
       touchModeRef.current = 'drag'
     } else if (e.touches.length === 2) {
       touchModeRef.current = 'pinch'
       const dx = e.touches[0].clientX - e.touches[1].clientX
       const dy = e.touches[0].clientY - e.touches[1].clientY
       lastPinchRef.current = Math.hypot(dx, dy)
-      lastTouchAngleRef.current = Math.atan2(dy, dx)
-      handleMouseUp()
-      isDraggingRef.current = false
-      canvasRef.current?.classList.remove('dragging')
     }
-  }, [getFurnitureAtClient, handleMouseUp, raycastGroundAtClient, selectObject])
+  }, [handleMouseDown])
 
   const handleTouchMove = useCallback((e) => {
     e.preventDefault()
     if (touchModeRef.current === 'drag' && e.touches.length === 1) {
       const t = e.touches[0]
-      if (!isDraggingRef.current || !selectedIdRef.current) return
-      const groundPt = raycastGroundAtClient(t.clientX, t.clientY)
-      if (!groundPt) return
-      const mesh = meshMapRef.current[selectedIdRef.current]
-      if (!mesh) return
-      const targetX = groundPt.x + dragOffsetRef.current.x
-      const targetZ = groundPt.z + dragOffsetRef.current.z
-      mesh.position.x = THREE.MathUtils.lerp(mesh.position.x, targetX, 0.45)
-      mesh.position.z = THREE.MathUtils.lerp(mesh.position.z, targetZ, 0.45)
+      handleMouseMove({ clientX: t.clientX, clientY: t.clientY })
     } else if (touchModeRef.current === 'pinch' && e.touches.length === 2) {
       if (!selectedIdRef.current) return
       const dx = e.touches[0].clientX - e.touches[1].clientX
       const dy = e.touches[0].clientY - e.touches[1].clientY
       const dist = Math.hypot(dx, dy)
       const scale = dist / lastPinchRef.current
-      const angle = Math.atan2(dy, dx)
-      const angleDelta = angle - lastTouchAngleRef.current
       lastPinchRef.current = dist
-      lastTouchAngleRef.current = angle
       const mesh = meshMapRef.current[selectedIdRef.current]
       if (mesh) {
-        const s = Math.max(0.1, Math.min(5, THREE.MathUtils.lerp(mesh.scale.x, mesh.scale.x * scale, 0.28)))
+        const s = Math.max(0.1, Math.min(5, mesh.scale.x * scale))
         mesh.scale.set(s, s, s)
-        mesh.rotation.y += normalizeAngleDelta(angleDelta) * 0.65
-        persistTransform(selectedIdRef.current)
       }
     }
-  }, [persistTransform, raycastGroundAtClient])
+  }, [handleMouseMove])
 
   const handleTouchEnd = useCallback(() => {
     handleMouseUp()
@@ -655,9 +431,7 @@ export default function DesktopARViewer() {
 
       if (roomImage) {
         const bg = await loadImage(roomImage)
-        exportCanvas.width = bg.width
-        exportCanvas.height = bg.height
-        drawExactImage(ctx, bg, exportCanvas.width, exportCanvas.height)
+        drawCoverImage(ctx, bg, exportCanvas.width, exportCanvas.height)
       } else {
         const gradient = ctx.createLinearGradient(0, 0, 0, exportCanvas.height)
         gradient.addColorStop(0, '#1a1a28')
@@ -684,55 +458,45 @@ export default function DesktopARViewer() {
   }, [persistTransform, roomImage])
 
   return (
-    <div ref={viewportRef} className="relative w-full h-full overflow-hidden rounded-2xl bg-bg-secondary">
-      <div className="absolute inset-0 flex items-center justify-center">
+    <div ref={containerRef} className="relative w-full h-full overflow-hidden rounded-2xl">
+      {/* Room photo background */}
+      {roomImage ? (
+        <img
+          src={roomImage}
+          alt="Room"
+          className="absolute inset-0 w-full h-full object-cover"
+          style={{ filter: 'brightness(0.88) saturate(0.9)' }}
+        />
+      ) : (
+        /* Default floor pattern when no photo uploaded */
         <div
-          ref={containerRef}
-          className="relative overflow-hidden rounded-2xl"
-          style={stageSize
-            ? { width: `${stageSize.width}px`, height: `${stageSize.height}px` }
-            : { width: '100%', height: '100%' }}
-        >
-          {/* Room photo background */}
-          {roomImage ? (
-            <img
-              src={roomImage}
-              alt="Room"
-              className="absolute inset-0 w-full h-full object-contain"
-              style={{ filter: 'brightness(0.92) saturate(0.96)' }}
-            />
-          ) : (
-            /* Default floor pattern when no photo uploaded */
-            <div
-              className="absolute inset-0"
-              style={{
-                background: 'linear-gradient(180deg, #1a1a28 0%, #22222e 60%, #2a2a3a 100%)',
-                backgroundImage: `
-                  linear-gradient(rgba(212,165,116,0.04) 1px, transparent 1px),
-                  linear-gradient(90deg, rgba(212,165,116,0.04) 1px, transparent 1px)
-                `,
-                backgroundSize: '80px 80px',
-              }}
-            />
-          )}
+          className="absolute inset-0"
+          style={{
+            background: 'linear-gradient(180deg, #1a1a28 0%, #22222e 60%, #2a2a3a 100%)',
+            backgroundImage: `
+              linear-gradient(rgba(212,165,116,0.04) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(212,165,116,0.04) 1px, transparent 1px)
+            `,
+            backgroundSize: '80px 80px',
+          }}
+        />
+      )}
 
-          {/* Three.js Canvas (transparent bg overlaid on photo) */}
-          <canvas
-            id="ar-canvas"
-            ref={canvasRef}
-            className="absolute inset-0 w-full h-full"
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onWheel={handleWheel}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-            style={{ touchAction: 'none' }}
-          />
-        </div>
-      </div>
+      {/* Three.js Canvas (transparent bg overlaid on photo) */}
+      <canvas
+        id="ar-canvas"
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        style={{ touchAction: 'none' }}
+      />
 
       {/* Instructions overlay */}
       {objects.length === 0 && (
@@ -748,7 +512,7 @@ export default function DesktopARViewer() {
       )}
 
       {/* Controls hint */}
-      {objects.length > 0 && !isCompactMobile && (
+      {objects.length > 0 && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none">
           <div className="bg-black/70 backdrop-blur-sm text-text-secondary text-xs px-4 py-2 rounded-full flex gap-4">
             <span>🖱️ Drag to move</span>

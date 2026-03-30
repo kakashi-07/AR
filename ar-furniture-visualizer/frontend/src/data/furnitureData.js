@@ -25,7 +25,6 @@ export const FURNITURE_CATEGORIES = [
   { id: 'storage',  label: 'Storage',    emoji: '🗄️' },
   { id: 'bedroom',  label: 'Bedroom',    emoji: '🛏️' },
   { id: 'work',     label: 'Work',       emoji: '💼' },
-  { id: 'decor',    label: 'Decor',      emoji: '💡' },
 ]
 
 export const FURNITURE_ITEMS = [
@@ -172,30 +171,6 @@ export const FURNITURE_ITEMS = [
     dimensions: { w: 0.45, h: 0.58, d: 0.45 },
     price: '₹3,800',
     popular: false,
-  },
-  {
-    id: 'floor_lamp',
-    name: 'Floor Lamp',
-    category: 'decor',
-    emoji: '💡',
-    description: 'Slim standing lamp with soft fabric shade and metal base.',
-    colors: ['white', 'beige', 'black'],
-    defaultColor: 'white',
-    dimensions: { w: 0.36, h: 1.6, d: 0.36 },
-    price: '₹6,200',
-    popular: false,
-  },
-  {
-    id: 'metal_locker',
-    name: 'Metal Locker',
-    category: 'storage',
-    emoji: '🗄️',
-    description: 'Industrial 6-door metal storage locker with label slots and pulls.',
-    colors: ['black', 'gray', 'white'],
-    defaultColor: 'black',
-    dimensions: { w: 0.82, h: 1.92, d: 0.44 },
-    price: '₹21,000',
-    popular: true,
   },
 ]
 

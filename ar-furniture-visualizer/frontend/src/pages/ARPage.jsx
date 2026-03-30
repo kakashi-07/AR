@@ -63,31 +63,21 @@ export default function ARPage() {
       ) : (
         <div className="flex-1 min-h-0 flex flex-col overflow-y-auto custom-scroll">
           <main
-            className={`relative flex-shrink-0 overflow-hidden transition-all duration-300 ${
-              isARMode ? 'p-0 sm:p-2' : 'p-2 sm:p-3'
-            } ${
-              isARMode
-                ? (isMobileViewerExpanded
-                  ? 'h-[88dvh] min-h-[34rem] max-h-[92dvh]'
-                  : 'h-[78dvh] min-h-[28rem] max-h-[86dvh]')
-                : (isMobileViewerExpanded
-                  ? 'h-[72dvh] min-h-[28rem] max-h-[80dvh]'
-                  : 'h-[40dvh] min-h-[16rem] max-h-[24rem]')
+            className={`relative flex-shrink-0 p-2 sm:p-3 overflow-hidden transition-all duration-300 ${
+              isMobileViewerExpanded
+                ? 'h-[72dvh] min-h-[28rem] max-h-[80dvh]'
+                : 'h-[40dvh] min-h-[16rem] max-h-[24rem]'
             }`}
           >
             <button
               onClick={() => setIsMobileViewerExpanded((value) => !value)}
-              className={`absolute z-20 rounded-xl border border-border bg-bg-secondary/90 p-2 text-text-primary shadow-card backdrop-blur-sm ${
-                isARMode ? 'right-3 top-3' : 'right-5 top-5'
-              }`}
+              className="absolute right-5 top-5 z-20 rounded-xl border border-border bg-bg-secondary/90 p-2 text-text-primary shadow-card backdrop-blur-sm"
               title={isMobileViewerExpanded ? 'Restore viewer size' : 'Expand viewer'}
             >
               {isMobileViewerExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
 
-            <div className={`w-full h-full overflow-hidden bg-bg-secondary ${
-              isARMode ? 'rounded-none border-y border-border sm:rounded-2xl sm:border' : 'rounded-2xl border border-border'
-            }`}>
+            <div className="w-full h-full rounded-2xl overflow-hidden border border-border bg-bg-secondary">
               {isARMode ? <MobileARViewer /> : <DesktopARViewer />}
             </div>
           </main>

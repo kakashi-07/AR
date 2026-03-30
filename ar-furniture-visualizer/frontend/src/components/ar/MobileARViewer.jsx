@@ -26,68 +26,6 @@ function createReticle() {
   return mesh
 }
 
-function normalizeAngleDelta(delta) {
-  let next = delta
-  while (next > Math.PI) next -= Math.PI * 2
-  while (next < -Math.PI) next += Math.PI * 2
-  return next
-}
-
-function distanceToScreenRect(clientX, clientY, rect) {
-  const dx = clientX < rect.minX ? rect.minX - clientX : clientX > rect.maxX ? clientX - rect.maxX : 0
-  const dy = clientY < rect.minY ? rect.minY - clientY : clientY > rect.maxY ? clientY - rect.maxY : 0
-  return Math.hypot(dx, dy)
-}
-
-function getProjectedScreenRect(group, camera, viewportRect) {
-  const box = new THREE.Box3().setFromObject(group)
-  if (box.isEmpty()) return null
-
-  const corners = [
-    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
-    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
-  ]
-
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  let visible = false
-  let depthSum = 0
-  let depthCount = 0
-
-  corners.forEach((corner) => {
-    corner.project(camera)
-    if (corner.z >= -1 && corner.z <= 1) visible = true
-    if (corner.z >= -1 && corner.z <= 1) {
-      depthSum += corner.z
-      depthCount += 1
-    }
-    const screenX = viewportRect.left + ((corner.x + 1) * 0.5 * viewportRect.width)
-    const screenY = viewportRect.top + ((1 - corner.y) * 0.5 * viewportRect.height)
-    minX = Math.min(minX, screenX)
-    minY = Math.min(minY, screenY)
-    maxX = Math.max(maxX, screenX)
-    maxY = Math.max(maxY, screenY)
-  })
-
-  if (!visible) return null
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    area: Math.max(1, (maxX - minX) * (maxY - minY)),
-    depth: depthCount ? depthSum / depthCount : Infinity,
-  }
-}
-
 export default function MobileARViewer() {
   const [arSupported, setArSupported] = useState(null)
   const [mode, setMode] = useState('idle') // idle | starting-live | live | starting-webxr | webxr | error
@@ -211,14 +149,6 @@ export default function MobileARViewer() {
     return objects.find((obj) => obj.id === id) || null
   }, [objects])
 
-  const getFurnitureRoot = useCallback((object) => {
-    let target = object
-    while (target?.parent && !target.userData?.isFurniture) {
-      target = target.parent
-    }
-    return target?.userData?.isFurniture ? target : null
-  }, [])
-
   const protectOverlayInteraction = useCallback((event) => {
     if (mode !== 'webxr') return
     event.preventDefault()
@@ -239,18 +169,6 @@ export default function MobileARViewer() {
       },
     })
   }, [updateTransform])
-
-  const refreshObjectAnchor = useCallback(async (objectId) => {
-    const hitResult = latestHitResultRef.current
-    if (webxrFeatureLevel !== 'anchors' || !hitResult?.createAnchor || !objectId) return
-
-    try {
-      anchorMapRef.current[objectId]?.delete?.()
-      anchorMapRef.current[objectId] = await hitResult.createAnchor()
-    } catch {
-      // Keep local-space placement when anchors cannot be refreshed.
-    }
-  }, [webxrFeatureLevel])
 
   const applyComfortableSurfaceScale = useCallback((sceneObjId, mesh) => {
     if (!sceneObjId || !mesh) return
@@ -490,63 +408,14 @@ export default function MobileARViewer() {
     const meshes = Object.values(meshMapRef.current).filter((mesh) => mesh.visible)
     const hits = raycasterRef.current.intersectObjects(meshes, true)
 
-    if (hits.length) {
-      return getFurnitureRoot(hits[0].object)
+    if (!hits.length) return null
+
+    let target = hits[0].object
+    while (target.parent && !target.userData.isFurniture) {
+      target = target.parent
     }
-
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return null
-
-    const insideCandidates = []
-    let nearest = null
-    let bestDistance = 90
-
-    meshes.forEach((group) => {
-      const projectedRect = getProjectedScreenRect(group, cameraRef.current, rect)
-      if (!projectedRect) return
-
-      const tightRect = {
-        minX: projectedRect.minX,
-        minY: projectedRect.minY,
-        maxX: projectedRect.maxX,
-        maxY: projectedRect.maxY,
-      }
-      const expandedRect = {
-        minX: projectedRect.minX - 22,
-        minY: projectedRect.minY - 22,
-        maxX: projectedRect.maxX + 22,
-        maxY: projectedRect.maxY + 22,
-      }
-      const insideTight =
-        clientX >= tightRect.minX &&
-        clientX <= tightRect.maxX &&
-        clientY >= tightRect.minY &&
-        clientY <= tightRect.maxY
-
-      if (insideTight) {
-        insideCandidates.push({ group, projectedRect })
-      }
-
-      const distance = distanceToScreenRect(clientX, clientY, expandedRect)
-
-      if (distance < bestDistance) {
-        bestDistance = distance
-        nearest = group
-      }
-    })
-
-    if (insideCandidates.length > 0) {
-      insideCandidates.sort((a, b) => {
-        if (Math.abs(a.projectedRect.area - b.projectedRect.area) > 1) {
-          return a.projectedRect.area - b.projectedRect.area
-        }
-        return a.projectedRect.depth - b.projectedRect.depth
-      })
-      return insideCandidates[0].group
-    }
-
-    return nearest
-  }, [getFurnitureRoot, setCanvasPointer])
+    return target.userData.isFurniture ? target : null
+  }, [setCanvasPointer])
 
   const projectToPlacementPlane = useCallback((clientX, clientY, depth = 2.4) => {
     if (!setCanvasPointer(clientX, clientY) || !cameraRef.current) return null
@@ -589,13 +458,11 @@ export default function MobileARViewer() {
     const point = projectToPlacementPlane(clientX, clientY, Math.abs(mesh.position.z) || 2.4)
     if (!point) return
 
-    const target = new THREE.Vector3(
+    mesh.position.set(
       point.x + offset.x,
       point.y + offset.y,
       point.z + offset.z
     )
-
-    mesh.position.lerp(target, 0.35)
   }, [projectToPlacementPlane])
 
   const placeMeshInFrontOfCamera = useCallback((mesh, slotIndex = 0) => {
@@ -632,12 +499,6 @@ export default function MobileARViewer() {
     mesh.rotation.set(0, euler.y, 0)
     return true
   }, [applyComfortableSurfaceScale])
-
-  const releaseWebXRInteractionLock = useCallback((delay = 320) => {
-    window.setTimeout(() => {
-      webxrPlacementRef.current.inProgress = false
-    }, delay)
-  }, [])
 
   useEffect(() => {
     if (mode !== 'live') return
@@ -676,7 +537,7 @@ export default function MobileARViewer() {
 
   const handlePointerDown = useCallback((event) => {
     if (mode !== 'live') return
-    if (event.pointerType === 'touch') return
+    if (event.pointerType === 'touch' && liveInteractionRef.current.pinchInProgress) return
     if (event.isPrimary === false) return
 
     const clientX = event.clientX
@@ -715,7 +576,7 @@ export default function MobileARViewer() {
 
   const handlePointerMove = useCallback((event) => {
     if (mode !== 'live') return
-    if (event.pointerType === 'touch') return
+    if (event.pointerType === 'touch' && liveInteractionRef.current.pinchInProgress) return
     const dragState = dragStateRef.current
 
     if (!dragState.active || dragState.pointerId !== event.pointerId || !dragState.objectId) {
@@ -731,15 +592,8 @@ export default function MobileARViewer() {
   }, [mode, moveSelectedToPoint])
 
   const handlePointerEnd = useCallback((event) => {
-    if (event.pointerType === 'touch') return
     const dragState = dragStateRef.current
     if (dragState.pointerId === event.pointerId) {
-      if (dragState.objectId) {
-        const mesh = meshMapRef.current[dragState.objectId]
-        if (mesh) {
-          persistMeshTransform(dragState.objectId, mesh)
-        }
-      }
       dragStateRef.current = {
         active: false,
         pointerId: null,
@@ -751,7 +605,7 @@ export default function MobileARViewer() {
         canvasRef.current.releasePointerCapture(event.pointerId)
       }
     }
-  }, [persistMeshTransform])
+  }, [])
 
   const handleTouchStart = useCallback((event) => {
     if (mode !== 'live') return
@@ -763,39 +617,6 @@ export default function MobileARViewer() {
         y: touch.clientY,
       })
     })
-
-    if (event.touches.length === 1 && !pinchState.active) {
-      const touch = event.touches[0]
-      const hit = getMeshAtPoint(touch.clientX, touch.clientY)
-
-      if (hit) {
-        const id = hit.userData.sceneObjId
-        const mesh = meshMapRef.current[id]
-        const point = projectToPlacementPlane(touch.clientX, touch.clientY, Math.abs(mesh?.position.z) || 2.4)
-
-        selectObject(id)
-
-        if (mesh && point) {
-          dragStateRef.current = {
-            active: true,
-            pointerId: 'touch',
-            objectId: id,
-            offset: mesh.position.clone().sub(point),
-            mode: 'drag',
-          }
-        }
-      } else {
-        dragStateRef.current = {
-          active: false,
-          pointerId: null,
-          objectId: null,
-          offset: new THREE.Vector3(),
-          mode: 'place',
-        }
-        placeSelectedAt(touch.clientX, touch.clientY)
-      }
-      return
-    }
 
     if (event.touches.length === 2 && selectedIdRef.current) {
       const [a, b] = Array.from(event.touches)
@@ -831,7 +652,7 @@ export default function MobileARViewer() {
         mode: 'idle',
       }
     }
-  }, [getMeshAtPoint, mode, placeSelectedAt, projectToPlacementPlane, selectObject])
+  }, [mode])
 
   const handleTouchMove = useCallback((event) => {
     if (mode !== 'live') return
@@ -846,25 +667,14 @@ export default function MobileARViewer() {
       }
     })
 
-    if (event.touches.length === 1) {
-      const dragState = dragStateRef.current
-      if (dragState.active && dragState.objectId) {
-        event.preventDefault()
-        const touch = event.touches[0]
-        moveSelectedToPoint(
-          dragState.objectId,
-          touch.clientX,
-          touch.clientY,
-          dragState.offset
-        )
-      }
-      return
-    }
-
     if (event.touches.length === 2 && pinchState.active && pinchState.objectId) {
       event.preventDefault()
       const [a, b] = Array.from(event.touches)
       const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      const center = {
+        x: (a.clientX + b.clientX) / 2,
+        y: (a.clientY + b.clientY) / 2,
+      }
       const angle = Math.atan2(b.clientY - a.clientY, b.clientX - a.clientX)
       const mesh = meshMapRef.current[pinchState.objectId]
       if (!mesh || !pinchState.distance) return
@@ -873,37 +683,34 @@ export default function MobileARViewer() {
         0.15,
         Math.min(4, pinchState.startScale * (distance / pinchState.distance))
       )
-      const smoothedScale = THREE.MathUtils.lerp(mesh.scale.x, nextScale, 0.28)
-      mesh.scale.setScalar(smoothedScale)
+      mesh.scale.setScalar(nextScale)
 
-      const angleDelta = normalizeAngleDelta(angle - pinchState.lastAngle)
-      mesh.rotation.y += angleDelta * 0.65
+      if (pinchState.lastCenter) {
+        const deltaX = center.x - pinchState.lastCenter.x
+        const deltaY = center.y - pinchState.lastCenter.y
+
+        mesh.rotation.y += deltaX * 0.01
+        mesh.rotation.x = Math.max(
+          -Math.PI / 2,
+          Math.min(Math.PI / 2, mesh.rotation.x + deltaY * 0.01)
+        )
+      }
+
+      const angleDelta = angle - pinchState.lastAngle
+      mesh.rotation.z += angleDelta
+
+      pinchState.lastCenter = center
       pinchState.lastAngle = angle
     }
-  }, [mode, moveSelectedToPoint])
+  }, [mode])
 
   const handleTouchEnd = useCallback((event) => {
     const pinchState = pinchStateRef.current
-    const dragState = dragStateRef.current
     Array.from(event.changedTouches).forEach((touch) => {
       pinchState.touches.delete(touch.identifier)
     })
 
-    if (dragState.active && dragState.objectId) {
-      const mesh = meshMapRef.current[dragState.objectId]
-      if (mesh) {
-        persistMeshTransform(dragState.objectId, mesh)
-      }
-    }
-
     if (event.touches.length < 2) {
-      if (pinchState.objectId) {
-        const mesh = meshMapRef.current[pinchState.objectId]
-        if (mesh) {
-          persistMeshTransform(pinchState.objectId, mesh)
-        }
-      }
-
       pinchState.active = false
       pinchState.distance = 0
       pinchState.lastCenter = null
@@ -911,17 +718,7 @@ export default function MobileARViewer() {
       pinchState.objectId = null
       liveInteractionRef.current.pinchInProgress = false
     }
-
-    if (event.touches.length === 0) {
-      dragStateRef.current = {
-        active: false,
-        pointerId: null,
-        objectId: null,
-        offset: new THREE.Vector3(),
-        mode: 'idle',
-      }
-    }
-  }, [persistMeshTransform])
+  }, [])
 
   const startLiveCamera = useCallback(async () => {
     setErrorMsg('')
@@ -1034,15 +831,10 @@ export default function MobileARViewer() {
 
       sessionRef.current = session
       setWebxrFeatureLevel(activeFeatureLevel)
-      renderer.xr.setReferenceSpaceType('local-floor')
+      renderer.xr.setReferenceSpaceType('local')
       await renderer.xr.setSession(session)
 
-      let refSpace
-      try {
-        refSpace = await session.requestReferenceSpace('local-floor')
-      } catch {
-        refSpace = await session.requestReferenceSpace('local')
-      }
+      const refSpace = await session.requestReferenceSpace('local')
       refSpaceRef.current = refSpace
       const viewerSpace = await session.requestReferenceSpace('viewer')
       const hitSource = await session.requestHitTestSource({ space: viewerSpace })
@@ -1058,7 +850,6 @@ export default function MobileARViewer() {
         if (!mesh || !reticleMesh?.visible || webxrPlacementRef.current.inProgress) return
 
         webxrPlacementRef.current.inProgress = true
-        webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 450
         updatePlacementStatus(`Placing ${selected.name || 'selected item'}…`)
 
         try {
@@ -1068,10 +859,19 @@ export default function MobileARViewer() {
           selectObject(selected.id)
           setHighlight(mesh, true)
           persistMeshTransform(selected.id, mesh)
-          await refreshObjectAnchor(selected.id)
-          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap the surface again to move it.`)
+          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
+
+          const hitResult = latestHitResultRef.current
+          if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
+            try {
+              anchorMapRef.current[selected.id]?.delete?.()
+              anchorMapRef.current[selected.id] = await hitResult.createAnchor()
+            } catch {
+              // Anchors are optional; keep the local-space placement as fallback.
+            }
+          }
         } finally {
-          releaseWebXRInteractionLock()
+          webxrPlacementRef.current.inProgress = false
         }
       })
 
@@ -1121,6 +921,15 @@ export default function MobileARViewer() {
               anchorPose.transform.position.y,
               anchorPose.transform.position.z
             )
+            const anchorQuaternion = new THREE.Quaternion(
+              anchorPose.transform.orientation.x,
+              anchorPose.transform.orientation.y,
+              anchorPose.transform.orientation.z,
+              anchorPose.transform.orientation.w
+            )
+            const anchorEuler = new THREE.Euler(0, 0, 0, 'YXZ')
+            anchorEuler.setFromQuaternion(anchorQuaternion)
+            mesh.rotation.set(0, anchorEuler.y, 0)
           })
         }
 
@@ -1135,7 +944,7 @@ export default function MobileARViewer() {
       setErrorMsg(error?.message || 'Could not start surface AR.')
       updatePlacementStatus('Move your phone to find a flat surface.')
     }
-  }, [arSupported, cleanupRenderer, getSelectedMesh, getSurfaceStatusMessage, persistMeshTransform, placeMeshOnReticle, refreshObjectAnchor, releaseWebXRInteractionLock, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
+  }, [arSupported, cleanupRenderer, getSurfaceStatusMessage, persistMeshTransform, placeMeshOnReticle, selectObject, setupRendererScene, syncSceneMeshes, updatePlacementStatus])
 
   const rotateSelected = useCallback((deg) => {
     const selected = getSelectedMesh()
@@ -1149,24 +958,19 @@ export default function MobileARViewer() {
     const selected = getSelectedMesh()
     if (!selected?.mesh) return
 
-    webxrPlacementRef.current.inProgress = true
     webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
     const nextScale = Math.max(0.15, Math.min(4, selected.mesh.scale.x * factor))
     selected.mesh.scale.setScalar(nextScale)
     selectObject(selected.id)
     persistMeshTransform(selected.id, selected.mesh)
-    releaseWebXRInteractionLock(220)
-  }, [getSelectedMesh, persistMeshTransform, releaseWebXRInteractionLock, selectObject])
+  }, [getSelectedMesh, persistMeshTransform, selectObject])
 
   const deleteSelected = useCallback(() => {
     const id = selectedIdRef.current
     if (!id) return
-    webxrPlacementRef.current.inProgress = true
-    webxrPlacementRef.current.ignoreSelectUntil = performance.now() + 400
     removeObject(id)
     selectObject(null)
-    releaseWebXRInteractionLock(220)
-  }, [releaseWebXRInteractionLock, removeObject, selectObject])
+  }, [removeObject, selectObject])
 
   const handlePhotoFile = useCallback((file) => {
     if (!file) return
@@ -1339,8 +1143,8 @@ export default function MobileARViewer() {
                 </div>
                 <span className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-white/70">
                   {webxrFeatureLevel === 'anchors'
-                      ? 'Anchors'
-                      : webxrFeatureLevel === 'dom-overlay'
+                    ? 'Anchors'
+                    : webxrFeatureLevel === 'dom-overlay'
                       ? 'Overlay'
                       : 'Hit Test'}
                 </span>
@@ -1376,7 +1180,7 @@ export default function MobileARViewer() {
           </div>
         )}
 
-        {mode === 'webxr' && selectedFurniture && false && (
+        {mode === 'webxr' && selectedFurniture && (
           <div className="absolute left-3 right-3 top-16 sm:left-4 sm:right-4 sm:top-20">
             <div className="mx-auto max-w-sm rounded-2xl bg-black/60 px-4 py-3 text-center backdrop-blur-sm">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
