@@ -63,7 +63,7 @@ export default function ARPage() {
       ) : (
         <div className="flex-1 min-h-0 flex flex-col overflow-y-auto custom-scroll">
           <main
-            className={`relative flex-shrink-0 p-2 sm:p-3 overflow-hidden transition-all duration-300 ${
+            className={`relative flex-shrink-0 overflow-hidden transition-all duration-300 ${
               isMobileViewerExpanded
                 ? 'h-[72dvh] min-h-[28rem] max-h-[80dvh]'
                 : 'h-[40dvh] min-h-[16rem] max-h-[24rem]'
@@ -77,7 +77,7 @@ export default function ARPage() {
               {isMobileViewerExpanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
 
-            <div className="w-full h-full rounded-2xl overflow-hidden border border-border bg-bg-secondary">
+            <div className="w-full h-full overflow-hidden bg-bg-secondary">
               {isARMode ? <MobileARViewer /> : <DesktopARViewer />}
             </div>
           </main>

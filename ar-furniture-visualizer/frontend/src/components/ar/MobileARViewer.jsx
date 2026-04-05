@@ -79,6 +79,7 @@ export default function MobileARViewer() {
   const webxrPlacementRef = useRef({
     inProgress: false,
     ignoreSelectUntil: 0,
+    lastStatusUpdate: 0,
   })
   const placementStatusRef = useRef('Move your phone to find a flat surface.')
   const surfaceStateRef = useRef('searching')
@@ -205,32 +206,64 @@ export default function MobileARViewer() {
   }, [getSceneObjectById])
 
   const cleanupRenderer = useCallback(() => {
-    if (rendererRef.current) {
-      rendererRef.current.setAnimationLoop(null)
-      rendererRef.current.dispose()
-      rendererRef.current = null
+    try {
+      if (rendererRef.current) {
+        rendererRef.current.setAnimationLoop(null)
+        rendererRef.current.dispose()
+        rendererRef.current = null
+      }
+    } catch (error) {
+      console.error('Error disposing renderer:', error)
     }
 
-    if (resizeHandlerRef.current) {
-      window.removeEventListener('resize', resizeHandlerRef.current)
-      resizeHandlerRef.current = null
+    try {
+      if (resizeHandlerRef.current) {
+        window.removeEventListener('resize', resizeHandlerRef.current)
+        resizeHandlerRef.current = null
+      }
+    } catch (error) {
+      console.error('Error removing resize handler:', error)
     }
 
-    cancelAnimationFrame(rafRef.current)
-    rafRef.current = null
+    try {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    } catch (error) {
+      console.error('Error canceling animation frame:', error)
+    }
+
     sceneRef.current = null
     cameraRef.current = null
     reticleRef.current = null
-    hitSrcRef.current?.cancel?.()
+    
+    try {
+      hitSrcRef.current?.cancel?.()
+    } catch (error) {
+      console.error('Error canceling hit source:', error)
+    }
     hitSrcRef.current = null
     refSpaceRef.current = null
     latestHitResultRef.current = null
-    Object.values(anchorMapRef.current).forEach((anchor) => {
-      anchor?.delete?.()
-    })
+    
+    try {
+      Object.values(anchorMapRef.current).forEach((anchor) => {
+        try {
+          anchor?.delete?.()
+        } catch {
+          // Ignore individual anchor delete errors
+        }
+      })
+    } catch (error) {
+      console.error('Error deleting anchors:', error)
+    }
     anchorMapRef.current = {}
     meshMapRef.current = {}
-    resetInteractionState()
+    
+    try {
+      resetInteractionState()
+    } catch (error) {
+      console.error('Error resetting interaction state:', error)
+    }
   }, [resetInteractionState])
 
   const stopLiveStream = useCallback(() => {
@@ -328,29 +361,47 @@ export default function MobileARViewer() {
     const meshMap = meshMapRef.current
     objects.forEach((obj) => {
       if (!meshMap[obj.id]) {
-        const group = buildFurniture(obj.furnitureId, obj.colorHex)
-        group.userData.sceneObjId = obj.id
-        group.userData.isFurniture = true
-        group.rotation.y = obj.rotationY || 0
-        if (obj.scale) {
-          group.scale.setScalar(obj.scale)
+        try {
+          const group = buildFurniture(obj.furnitureId, obj.colorHex)
+          group.userData.sceneObjId = obj.id
+          group.userData.isFurniture = true
+          group.rotation.y = obj.rotationY || 0
+          if (obj.scale) {
+            group.scale.setScalar(obj.scale)
+          }
+          if (obj.position) {
+            group.position.set(obj.position.x || 0, obj.position.y || 0, obj.position.z || 0)
+          }
+          group.visible = false
+          scene.add(group)
+          meshMap[obj.id] = group
+        } catch (error) {
+          console.error('Error building furniture:', error)
         }
-        if (obj.position) {
-          group.position.set(obj.position.x || 0, obj.position.y || 0, obj.position.z || 0)
-        }
-        group.visible = false
-        scene.add(group)
-        meshMap[obj.id] = group
       }
     })
 
     const currentIds = new Set(objects.map((obj) => obj.id))
     Object.keys(meshMap).forEach((id) => {
       if (!currentIds.has(id)) {
-        anchorMapRef.current[id]?.delete?.()
-        delete anchorMapRef.current[id]
-        scene?.remove(meshMap[id])
-        delete meshMap[id]
+        try {
+          const anchor = anchorMapRef.current[id]
+          if (anchor) {
+            try {
+              anchor.delete()
+            } catch {
+              // Ignore anchor delete errors
+            }
+            delete anchorMapRef.current[id]
+          }
+          
+          if (scene && meshMap[id]) {
+            scene.remove(meshMap[id])
+          }
+          delete meshMap[id]
+        } catch (error) {
+          console.error('Error cleaning up mesh:', error)
+        }
       }
     })
   }, [objects])
@@ -524,14 +575,25 @@ export default function MobileARViewer() {
     const hasNewObjects = newObjects.length > 0
 
     if (hasNewObjects) {
-      selectObject(newObjects[newObjects.length - 1].id)
+      // Protect against rapid successive adds
+      try {
+        selectObject(newObjects[newObjects.length - 1].id)
+      } catch (error) {
+        console.error('Error selecting new object:', error)
+      }
     }
 
-    updatePlacementStatus(
-      hasNewObjects
-        ? getSurfaceStatusMessage(surfaceStateRef.current)
-        : getSurfaceStatusMessage(surfaceStateRef.current)
-    )
+    // Only update if status actually changed to prevent excessive renders
+    const now = performance.now()
+    if (now - webxrPlacementRef.current.lastStatusUpdate > 150) {
+      updatePlacementStatus(
+        hasNewObjects
+          ? getSurfaceStatusMessage(surfaceStateRef.current)
+          : getSurfaceStatusMessage(surfaceStateRef.current)
+      )
+      webxrPlacementRef.current.lastStatusUpdate = now
+    }
+    
     knownObjectIdsRef.current = new Set(objects.map((obj) => obj.id))
   }, [getSurfaceStatusMessage, mode, objects, selectObject, updatePlacementStatus])
 
@@ -840,38 +902,52 @@ export default function MobileARViewer() {
       const hitSource = await session.requestHitTestSource({ space: viewerSpace })
       hitSrcRef.current = hitSource
 
-      session.addEventListener('select', async () => {
-        if (performance.now() < webxrPlacementRef.current.ignoreSelectUntil) return
-
-        const selected = getSelectedMesh()
-        const mesh = selected?.mesh
-        const reticleMesh = reticleRef.current
-
-        if (!mesh || !reticleMesh?.visible || webxrPlacementRef.current.inProgress) return
-
-        webxrPlacementRef.current.inProgress = true
-        updatePlacementStatus(`Placing ${selected.name || 'selected item'}…`)
-
+      session.addEventListener('select', async (event) => {
         try {
-          const placed = placeMeshOnReticle(mesh, reticleMesh.matrix)
-          if (!placed) return
+          if (performance.now() < webxrPlacementRef.current.ignoreSelectUntil) return
 
-          selectObject(selected.id)
-          setHighlight(mesh, true)
-          persistMeshTransform(selected.id, mesh)
-          updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
+          const selected = getSelectedMesh()
+          const mesh = selected?.mesh
+          const reticleMesh = reticleRef.current
 
-          const hitResult = latestHitResultRef.current
-          if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
-            try {
-              anchorMapRef.current[selected.id]?.delete?.()
-              anchorMapRef.current[selected.id] = await hitResult.createAnchor()
-            } catch {
-              // Anchors are optional; keep the local-space placement as fallback.
+          if (!mesh || !reticleMesh?.visible || webxrPlacementRef.current.inProgress) return
+
+          webxrPlacementRef.current.inProgress = true
+          updatePlacementStatus(`Placing ${selected.name || 'selected item'}…`)
+
+          try {
+            const placed = placeMeshOnReticle(mesh, reticleMesh.matrix)
+            if (!placed) return
+
+            selectObject(selected.id)
+            setHighlight(mesh, true)
+            persistMeshTransform(selected.id, mesh)
+            updatePlacementStatus(`Placed ${selected.name || 'item'}. Tap again to reposition it.`)
+            webxrPlacementRef.current.lastStatusUpdate = performance.now()
+
+            const hitResult = latestHitResultRef.current
+            if (activeFeatureLevel === 'anchors' && hitResult?.createAnchor) {
+              try {
+                const existingAnchor = anchorMapRef.current[selected.id]
+                if (existingAnchor) {
+                  try {
+                    existingAnchor.delete()
+                  } catch {
+                    // Ignore delete errors
+                  }
+                }
+                anchorMapRef.current[selected.id] = await hitResult.createAnchor()
+              } catch {
+                // Anchors are optional; keep the local-space placement as fallback.
+              }
             }
+          } catch (error) {
+            console.error('Error placing mesh:', error)
+          } finally {
+            webxrPlacementRef.current.inProgress = false
           }
-        } finally {
-          webxrPlacementRef.current.inProgress = false
+        } catch (error) {
+          console.error('WebXR select event error:', error)
         }
       })
 
@@ -883,57 +959,74 @@ export default function MobileARViewer() {
         setMode('idle')
       })
 
-      renderer.setAnimationLoop((_, frame) => {
-        if (!frame) return
+      // Pre-allocate objects for WebXR render loop to avoid garbage collection pressure
+      const webxrTempQuaternion = new THREE.Quaternion()
+      const webxrTempEuler = new THREE.Euler(0, 0, 0, 'YXZ')
 
-        const results = frame.getHitTestResults(hitSource)
-        if (results.length > 0) {
-          latestHitResultRef.current = results[0]
-          const pose = results[0].getPose(refSpace)
-          if (pose && reticleRef.current) {
-            reticleRef.current.visible = true
-            reticleRef.current.matrix.fromArray(pose.transform.matrix)
-            if (surfaceStateRef.current !== 'ready') {
-              surfaceStateRef.current = 'ready'
-              updatePlacementStatus(getSurfaceStatusMessage('ready'))
+      renderer.setAnimationLoop((_, frame) => {
+        try {
+          if (!frame) return
+
+          const results = frame.getHitTestResults(hitSource)
+          if (results.length > 0) {
+            latestHitResultRef.current = results[0]
+            const pose = results[0].getPose(refSpace)
+            if (pose && reticleRef.current) {
+              reticleRef.current.visible = true
+              reticleRef.current.matrix.fromArray(pose.transform.matrix)
+              if (surfaceStateRef.current !== 'ready') {
+                surfaceStateRef.current = 'ready'
+                // Throttle status updates to prevent excessive re-renders
+                const now = performance.now()
+                if (now - webxrPlacementRef.current.lastStatusUpdate > 100) {
+                  updatePlacementStatus(getSurfaceStatusMessage('ready'))
+                  webxrPlacementRef.current.lastStatusUpdate = now
+                }
+              }
+            }
+          } else if (reticleRef.current) {
+            latestHitResultRef.current = null
+            reticleRef.current.visible = false
+            if (surfaceStateRef.current !== 'searching') {
+              surfaceStateRef.current = 'searching'
+              // Throttle status updates to prevent excessive re-renders
+              const now = performance.now()
+              if (now - webxrPlacementRef.current.lastStatusUpdate > 100) {
+                updatePlacementStatus(getSurfaceStatusMessage('searching'))
+                webxrPlacementRef.current.lastStatusUpdate = now
+              }
             }
           }
-        } else if (reticleRef.current) {
-          latestHitResultRef.current = null
-          reticleRef.current.visible = false
-          if (surfaceStateRef.current !== 'searching') {
-            surfaceStateRef.current = 'searching'
-            updatePlacementStatus(getSurfaceStatusMessage('searching'))
+
+          if (activeFeatureLevel === 'anchors') {
+            Object.entries(anchorMapRef.current).forEach(([id, anchor]) => {
+              const mesh = meshMapRef.current[id]
+              if (!mesh || !anchor) return
+
+              const anchorPose = frame.getPose(anchor.anchorSpace, refSpace)
+              if (!anchorPose) return
+
+              mesh.visible = true
+              mesh.position.set(
+                anchorPose.transform.position.x,
+                anchorPose.transform.position.y,
+                anchorPose.transform.position.z
+              )
+              webxrTempQuaternion.set(
+                anchorPose.transform.orientation.x,
+                anchorPose.transform.orientation.y,
+                anchorPose.transform.orientation.z,
+                anchorPose.transform.orientation.w
+              )
+              webxrTempEuler.setFromQuaternion(webxrTempQuaternion)
+              mesh.rotation.set(0, webxrTempEuler.y, 0)
+            })
           }
+
+          renderer.render(scene, renderer.xr.getCamera(camera))
+        } catch (error) {
+          console.error('WebXR render loop error:', error)
         }
-
-        if (activeFeatureLevel === 'anchors') {
-          Object.entries(anchorMapRef.current).forEach(([id, anchor]) => {
-            const mesh = meshMapRef.current[id]
-            if (!mesh || !anchor) return
-
-            const anchorPose = frame.getPose(anchor.anchorSpace, refSpace)
-            if (!anchorPose) return
-
-            mesh.visible = true
-            mesh.position.set(
-              anchorPose.transform.position.x,
-              anchorPose.transform.position.y,
-              anchorPose.transform.position.z
-            )
-            const anchorQuaternion = new THREE.Quaternion(
-              anchorPose.transform.orientation.x,
-              anchorPose.transform.orientation.y,
-              anchorPose.transform.orientation.z,
-              anchorPose.transform.orientation.w
-            )
-            const anchorEuler = new THREE.Euler(0, 0, 0, 'YXZ')
-            anchorEuler.setFromQuaternion(anchorQuaternion)
-            mesh.rotation.set(0, anchorEuler.y, 0)
-          })
-        }
-
-        renderer.render(scene, renderer.xr.getCamera(camera))
       })
 
       setMode('webxr')
